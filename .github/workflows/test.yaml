@@ -1,0 +1,31 @@
+---
+name: test
+
+# A callable workflow to execute repository tests.
+
+on:
+  workflow_call:
+
+
+env:
+  POETRY_VERSION: 2.1.1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # pip install -r build-requirements.txt
+          pip install --no-cache-dir poetry=="${{ env.POETRY_VERSION }}"
+          POETRY_VIRTUALENVS_CREATE=false poetry install --only dev --no-root --no-directory
+      - name: Jote
+        run: |
+          jote --dry-run --allow-no-tests

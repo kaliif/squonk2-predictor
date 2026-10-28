@@ -1,0 +1,40 @@
+---
+name: publish-stable
+
+# Actions that take place to create a 'stable' image.
+
+# -----------------
+# Control variables (GitHub Secrets)
+# -----------------
+#
+# At the GitHub 'organisation' or 'project' level you must have the following
+# GitHub 'Repository Secrets' defined (i.e. via 'Settings -> Secrets'): -
+#
+# DOCKERHUB_USERNAME
+# DOCKERHUB_TOKEN
+#
+# -----------
+# Environment (GitHub Environments)
+# -----------
+#
+# Environment         (n/a)
+
+on:
+  push:
+    branches:
+    - main
+  schedule:
+  # Build the default branch (typically this branch, main) every day at 6:01am...
+  - cron: '1 6 * * *'
+
+jobs:
+  call-test:
+    uses: ./.github/workflows/test.yaml
+
+  call-build-with-push:
+    needs: call-test
+    uses: ./.github/workflows/build-all-with-push-option.yaml
+    secrets: inherit
+    with:
+      image-tag: stable
+      image-push: true

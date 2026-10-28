@@ -1,0 +1,22 @@
+.idea
+.vscode/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+
+# macOS stuff
+**/.DS_Store
+
+# temp files
+*~
+\#*#
+\#*
+
+# tool caches
+.mypy_cache/
+
+# model files and job output
+*.jmodel

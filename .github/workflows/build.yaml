@@ -1,0 +1,35 @@
+---
+name: build
+
+# Actions that take place on branches
+# or are driven by pull-requests to the main/master branch.
+
+# -----------------
+# Control variables (GitHub Secrets)
+# -----------------
+#
+# (n/a)
+#
+# -----------
+# Environment (GitHub Environments)
+# -----------
+#
+# Environment         (n/a)
+
+on:
+  push:
+    branches-ignore:
+    - main
+    - staging
+    tags-ignore:
+    - '**'
+
+jobs:
+  call-test:
+    uses: ./.github/workflows/test.yaml
+
+  call-build-without-push:
+    needs: call-test
+    uses: ./.github/workflows/build-all-with-push-option.yaml
+    with:
+      image-tag: latest

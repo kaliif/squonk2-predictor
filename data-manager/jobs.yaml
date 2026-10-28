@@ -1,0 +1,70 @@
+---
+kind: DataManagerJobDefinition
+kind-version: '2021.1'
+
+name: Predict values using scikit-learn models
+collection: im-predict-local
+
+jobs:
+
+  predict:
+    name: Predict values
+    description: >-
+      Predicts values for molecules using a pre-trained scikit-learn model
+    version: '1.0.0'
+    category: predict
+    keywords:
+    - predict
+    - scikit-learn
+    image:
+      name: informaticsmatters/squonk2-predict-local
+      tag: latest
+      project-directory: /data
+      working-directory: /data
+      fix-permissions: true
+    command: >-
+      python /code/predict.py
+      --model '{{ modelFile }}'
+      --molecules '{{ inputFile }}'
+      --outfile '{{ outputFile }}'
+    variables:
+      order:
+        options:
+        - outputFile
+      inputs:
+        type: object
+        required:
+        - modelFile
+        - inputFile
+        properties:
+          modelFile:
+            title: Model (.jmodel)
+            mime-types:
+            - application/octet-stream
+            type: file
+          inputFile:
+            title: Molecules to predict (.sdf or .smi)
+            mime-types:
+            - chemical/x-mdl-sdfile
+            - squonk/x-smiles
+            - chemical/x-daylight-smiles
+            type: file
+      outputs:
+        type: object
+        properties:
+          outputFile:
+            title: Output file
+            mime-types:
+            - text/csv
+            creates: '{{ outputFile }}'
+            type: file
+      options:
+        type: object
+        required:
+        - outputFile
+        properties:
+          outputFile:
+            title: Output file
+            type: string
+            pattern: "^[A-Za-z0-9_/\\.\\-]+$"
+            default: predictions.csv

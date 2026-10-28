@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "squonk2-predict-local"
+version = "0.1.0"
+description = "Squonk2 job that predicts values for molecules using a pre-trained scikit-learn model"
+authors = [
+  "Tim Dudgeon <tdudgeon@informaticsmatters.com>",
+  "Kalev Takkis <ktakkis@informaticsmatters.com>",
+]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.12"
+rdkit = "^2023.9.6"
+scikit-learn = "^1.2"
+pandas = "^2.2.2"
+mordredcommunity = "^2.0.7"
+im-data-manager-job-utilities = "^1.2.0"
+
+[tool.poetry.group.dev.dependencies]
+im-jote = "^0.10.7"
+pre-commit = "^3"
+pylint = "^3"
+isort = "^5.13.2"
+black = "^24.8.0"
+mypy = "^1.11.1"
+ipython = "^8.32.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

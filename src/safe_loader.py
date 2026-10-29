@@ -142,7 +142,7 @@ class _Rejected(Stub):
 
 def stub_name(obj) -> str | None:
     """Qualified name of the class a Stub stands in for, or None."""
-    return obj._stub_name if isinstance(obj, Stub) else None  # pylint: disable=protected-access
+    return getattr(obj, "_stub_name") if isinstance(obj, Stub) else None
 
 
 @dataclass

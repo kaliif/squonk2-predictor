@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import sklearn
 from sklearn.base import BaseEstimator, is_classifier
 
@@ -76,6 +77,52 @@ class ModelSpec:
         X, ok = self.featurizer.compute(mols)
         index = {name: i for i, name in enumerate(self.featurizer.feature_names)}
         return X[:, [index[n] for n in self.feature_names]], ok
+
+    def predict(self, mols) -> tuple[pd.DataFrame, np.ndarray]:
+        """Predictions for a list of molecules: a table with a row per
+        molecule, empty for molecules that couldn't be featurised, and the
+        mask of molecules that were predicted."""
+        X, ok = self.features(mols)
+        table = pd.DataFrame(index=range(len(mols)), columns=self.output_columns)
+        if ok.any():
+            rows = np.flatnonzero(ok)
+            outputs = self._output_columns(self.predict_features(X[ok]))
+            for col, values in outputs.items():
+                # object dtype keeps e.g. integer labels from turning into
+                # floats when other rows are empty
+                table[col] = pd.Series(values, index=rows, dtype=object)
+        return table, ok
+
+    @property
+    def output_columns(self) -> list[str]:
+        """Names of the columns of the predict() table."""
+        zero = np.zeros((1, len(self.feature_names)))
+        return list(self._output_columns(self.predict_features(zero)))
+
+    def _output_columns(self, out: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Flatten predict_features output into named columns: 'prediction';
+        'probability' or 'score' for binary classifiers (of the second class),
+        or 'probability_<class>' / 'score_<class>' for multiclass ones;
+        'leverage' and 'in_domain'."""
+        cols = {"prediction": out["prediction"]}
+        for key, name in (
+            ("probability", "probability"),
+            ("decision_function", "score"),
+        ):
+            if key not in out:
+                continue
+            values = out[key]
+            if values.ndim == 1:
+                cols[name] = values
+            elif values.shape[1] == 2:
+                cols[name] = values[:, 1]
+            else:
+                for cls, column in zip(self.classes, values.T):
+                    cols[f"{name}_{cls}"] = column
+        for key in ("leverage", "in_domain"):
+            if key in out:
+                cols[key] = out[key]
+        return cols
 
     def predict_features(self, X: np.ndarray) -> dict[str, np.ndarray]:
         """Raw model outputs for a feature matrix with no failed rows."""

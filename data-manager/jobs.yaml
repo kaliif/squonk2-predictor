@@ -10,7 +10,10 @@ jobs:
   predict:
     name: Predict values
     description: >-
-      Predicts values for molecules using a pre-trained scikit-learn model
+      Predicts values for molecules using a pre-trained scikit-learn model.
+      The descriptors the model was trained on are calculated for the
+      molecules. Supply probe molecules with known predictions to verify the
+      model; without them the results are marked as unverified.
     version: '1.0.0'
     category: predict
     keywords:
@@ -27,10 +30,15 @@ jobs:
       --model '{{ modelFile }}'
       --molecules '{{ inputFile }}'
       --outfile '{{ outputFile }}'
+      {% if probesFile is defined %}--probes '{{ probesFile }}'{% endif %}
+      {% if delimiter is defined %}--delimiter {{ delimiter }}{% endif %}
+      {% if readHeader is defined and readHeader %}--read-header{% endif %}
     variables:
       order:
         options:
         - outputFile
+        - delimiter
+        - readHeader
       inputs:
         type: object
         required:
@@ -48,6 +56,15 @@ jobs:
             - chemical/x-mdl-sdfile
             - squonk/x-smiles
             - chemical/x-daylight-smiles
+            type: file
+          probesFile:
+            title: Probe molecules with expected predictions (.csv)
+            description: >-
+              Columns smiles, prediction and optionally score (probability or
+              decision score of a binary classifier). The model is rejected if
+              it doesn't reproduce them.
+            mime-types:
+            - text/csv
             type: file
       outputs:
         type: object
@@ -68,3 +85,16 @@ jobs:
             type: string
             pattern: "^[A-Za-z0-9_/\\.\\-]+$"
             default: predictions.csv
+          delimiter:
+            title: Delimiter of a SMILES input file
+            type: string
+            enum:
+            - tab
+            - space
+            - comma
+            - semicolon
+            default: tab
+          readHeader:
+            title: SMILES input file has a header line
+            type: boolean
+            default: false

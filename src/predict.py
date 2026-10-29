@@ -1,67 +1,232 @@
+"""Predict values for molecules with a pre-trained model.
+
+The model file is loaded without running any code it contains, its format is
+recognised and the descriptors it was trained on are calculated for the
+molecules. Models that don't say which descriptors they need, or whose
+parts aren't supported, are rejected.
+
+A model whose predictions can't be verified against probe molecules (see
+probes.py) is still used, but its results are reported as unverified.
+
+The output CSV has a row per input molecule, in input order, with the id,
+SMILES, the prediction and, depending on the model, a probability or score
+and the applicability domain. Molecules that can't be predicted have an
+error instead.
+
+Example:
+
+    python src/predict.py --model models/caco2_wang.jmodel \\
+        --molecules data/candidates-10.sdf --outfile predictions.csv
+"""
+
 import argparse
-import pickle
-import pandas as pd
+import csv
+import gzip
+import logging
+from collections.abc import Iterator
+from itertools import islice
+from pathlib import Path
 
-import descriptor_generator
-from descriptor_generator import run as calculate_mordred
+from dm_job_utilities.dm_log import DmLog
+from rdkit import Chem, RDLogger
+from sklearn.base import BaseEstimator
 
-temp_desc_file = 'molecules_calcd.csv'
+import jaqpotpy_adapter
+from model_spec import ModelSpec, UnsupportedModelError, check_spec
+from probes import ProbeError, check_probes, read_probes
+from safe_loader import ModelLoadError, UnsafeModelError, load_model_file, stub_name
+
+BATCH_SIZE = 1000
+DELIMITERS = {"tab": "\t", "space": " ", "comma": ",", "semicolon": ";"}
+
+
+def _event(msg, level=logging.INFO):
+    # DmLog truncates its shared buffer without rewinding it, which pads every
+    # message after the first with NUL characters
+    DmLog.string_buffer.seek(0)
+    DmLog.emit_event(msg, level=level)
+
+
+def _fatal(msg):
+    DmLog.string_buffer.seek(0)
+    DmLog.emit_fatal_event(msg)
+
+
+def load_spec(path) -> ModelSpec:
+    """Load and check a model file, or raise saying why it can't be used."""
+    result = load_model_file(path)
+    obj = result.obj
+    if jaqpotpy_adapter.is_jaqpotpy_model(obj):
+        spec = jaqpotpy_adapter.adapt(obj, name=Path(path).stem)
+    elif isinstance(obj, BaseEstimator):
+        raise UnsupportedModelError(
+            f"the file holds a bare {type(obj).__name__} with no record of the "
+            "descriptors it was trained on"
+        )
+    else:
+        what = stub_name(obj) or type(obj).__name__
+        raise UnsupportedModelError(f"unrecognised model file contents ({what})")
+    spec.warnings[:0] = result.warnings
+    check_spec(spec)
+    return spec
+
+
+def read_molecules(
+    path, delimiter="\t", read_header=False
+) -> Iterator[tuple[str, str, Chem.Mol | None]]:
+    """(id, SMILES, molecule) for each record of an SDF or SMILES file.
+
+    The molecule is None if the record can't be parsed. SMILES files have the
+    SMILES in the first column and an optional id in the second; columns are
+    separated by the delimiter or, in the first column, by whitespace.
+    """
+    path = str(path)
+    opener = gzip.open if path.endswith(".gz") else open
+    if path.removesuffix(".gz").endswith(".sdf"):
+        with opener(path, "rb") as fh:
+            for mol in Chem.ForwardSDMolSupplier(fh, removeHs=False):
+                if mol is None:
+                    yield "", "", None
+                    continue
+                name = mol.GetProp("_Name") if mol.HasProp("_Name") else ""
+                yield name, Chem.MolToSmiles(Chem.RemoveHs(mol, sanitize=False)), mol
+    else:
+        with opener(path, "rt", encoding="utf-8", newline="") as fh:
+            rows = csv.reader(fh, delimiter=delimiter, skipinitialspace=True)
+            if read_header:
+                next(rows, None)
+            for row in rows:
+                # SMILES can't contain whitespace, so anything after it in the
+                # first column is the id of a space separated file
+                first = row[0].split(None, 1) if row else []
+                if not first:
+                    continue
+                smiles = first[0]
+                if len(row) > 1:
+                    name = row[1].strip()
+                else:
+                    name = first[1].strip() if len(first) > 1 else ""
+                yield name, smiles, Chem.MolFromSmiles(smiles)
+
 
 def run(
-        sk_model,
-        molecules,
-):
-
-    with open(sk_model, 'rb') as f:
-        model = pickle.load(f)
-
-        
-    print(model)
-    print(type(model))
-    print(dir(model))    
-
-    calculate_mordred(
-        molecules,
-        temp_desc_file,
-        delimiter=',',
-        write_header=True,
-
-
-        
+    model,
+    molecules,
+    outfile,
+    probes=None,
+    delimiter="\t",
+    read_header=False,
+) -> dict:
+    """Predict the molecules and write the output CSV. Raises if the model
+    can't be used. Returns counts of molecules read and predicted."""
+    spec = load_spec(model)
+    _event(
+        f"Model {spec.name} ({spec.source_format}): {type(spec.estimator).__name__} "
+        f"predicting {spec.target_name} from {len(spec.feature_names)} "
+        f"{spec.featurizer.describe()} features"
     )
+    for warning in spec.warnings:
+        _event(f"Warning: {warning}", level=logging.WARNING)
 
-    descriptors = pd.read_csv(temp_desc_file)
-    print(descriptors)
+    if probes:
+        probe_table = read_probes(probes)
+        check_probes(spec, probe_table)
+        status = "verified"
+        _event(f"Model verified: reproduces all {len(probe_table)} probe predictions")
+    else:
+        status = "unverified"
+        _event(
+            "Model is UNVERIFIED: no probe molecules were given, so it is not "
+            "known whether the descriptors and estimator still reproduce the "
+            "predictions made when the model was created",
+            level=logging.WARNING,
+        )
 
-    predictions = model.predict(descriptors)
-    print(predictions)
-    print(predictions.shape)
+    target = spec.target_name
+    # prediction columns are named after the target so outputs of several
+    # models can be combined
+    columns = [
+        target if col == "prediction" else f"{target}_{col}"
+        for col in spec.output_columns
+    ]
+    counts = {"read": 0, "predicted": 0, "out_of_domain": 0}
+    Path(outfile).parent.mkdir(parents=True, exist_ok=True)
+    records = read_molecules(molecules, delimiter=delimiter, read_header=read_header)
+    with open(outfile, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["id", "smiles", *columns, "model_status", "error"])
+        while batch := list(islice(records, BATCH_SIZE)):
+            table, ok = spec.predict([mol for _, _, mol in batch])
+            for i, (name, smiles, mol) in enumerate(batch):
+                if ok[i]:
+                    values = list(table.iloc[i])
+                    error = ""
+                else:
+                    values = [""] * len(columns)
+                    error = (
+                        "invalid molecule"
+                        if mol is None
+                        else "descriptors can't be calculated"
+                    )
+                writer.writerow([name, smiles, *values, status, error])
+            counts["read"] += len(batch)
+            counts["predicted"] += int(ok.sum())
+            if "in_domain" in table:
+                counts["out_of_domain"] += int(
+                    (~table.in_domain[ok].astype(bool)).sum()
+                )
 
-    print('asdopughas')
-    
-    
-    
+    summary = f"Predicted {counts['predicted']} of {counts['read']} molecules"
+    if spec.domain is not None:
+        summary += f", {counts['out_of_domain']} outside the applicability domain"
+    _event(summary)
+    DmLog.emit_cost(counts["predicted"])
+    return counts
+
+
 def main():
-    # Example:
-    # python src/predict.py
-    #     --read-header\
-    #     --outfile=outfile.json\
-    #     --infile=data/caco2_mordred_filtered_scaled.smi\
-    #     --bootstrap=True,False\
-    #     --ccp_alpha=0.0,0.1,0.5
-
-    parser = argparse.ArgumentParser(description="Prepare data")
-
-    parser.add_argument("--model", required=True, help="SciKit .jmodel file")
-    parser.add_argument("--molecules", required=True, help="Molecules to predict")
-
+    parser = argparse.ArgumentParser(
+        description="Predict values for molecules with a pre-trained model"
+    )
+    parser.add_argument("--model", required=True, help="Model file")
+    parser.add_argument(
+        "--molecules", required=True, help="Molecules to predict (.sdf or .smi)"
+    )
+    parser.add_argument("--outfile", required=True, help="Output CSV file")
+    parser.add_argument(
+        "--probes",
+        help="CSV of probe molecules (smiles, prediction[, score]) the model "
+        "must reproduce",
+    )
+    parser.add_argument(
+        "--delimiter",
+        default="tab",
+        help=f"Delimiter of a SMILES file: {', '.join(DELIMITERS)} or a character",
+    )
+    parser.add_argument(
+        "--read-header",
+        action="store_true",
+        help="The SMILES file has a header line",
+    )
     args = parser.parse_args()
 
-    run(
-        sk_model=args.model,
-        molecules=args.molecules,
-    )
+    RDLogger.DisableLog("rdApp.*")
+    try:
+        run(
+            model=args.model,
+            molecules=args.molecules,
+            outfile=args.outfile,
+            probes=args.probes,
+            delimiter=DELIMITERS.get(args.delimiter, args.delimiter),
+            read_header=args.read_header,
+        )
+    except UnsafeModelError as exc:
+        _fatal(f"Model rejected as unsafe: {exc}")
+    except (ModelLoadError, UnsupportedModelError) as exc:
+        _fatal(f"Model can't be used: {exc}")
+    except ProbeError as exc:
+        _fatal(f"Model failed verification: {exc}")
 
 
 if __name__ == "__main__":
-    main()    
+    main()

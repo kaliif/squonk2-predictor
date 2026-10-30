@@ -1,8 +1,8 @@
-"""Write probe files for jaqpotpy 1.0.x models, using jaqpotpy itself.
+"""Write reference predictions for a jaqpotpy 1.0.x model with jaqpotpy.
 
-Probe values must come from the software that created the model, not from
-this job's reimplementation, or the probes only show that the job agrees with
-itself. This script therefore does NOT run in the job environment. It needs an
+The tests compare the job's predictions with these (see tests/reference.py).
+They must come from the software that created the model, not from this job's
+reimplementation, or they only show that the job agrees with itself. This script therefore does NOT run in the job environment. It needs an
 environment that reproduces the one the legacy models were trained in:
 
     python3.11 -m venv venvjq
@@ -17,14 +17,14 @@ import time; they aren't needed for scikit-learn models, so empty stand-ins
 are used instead of installing them.
 
 The model files are unpickled with plain pickle, so only run this on trusted
-models. Probe molecules are taken from a CSV with the SMILES in a 'Drug'
+models. Molecules are taken from a CSV with the SMILES in a 'Drug'
 column (the TDC ADMET test sets were used for the legacy models) and spread
 evenly over the range of predictions, so both classes and the extremes are
 covered.
 
-    venvjq/bin/python -I scripts/make_jaqpotpy_probes.py \\
+    venvjq/bin/python -I scripts/make_reference_predictions.py \\
         --model models/AMES.jmodel --molecules admet_group/ames/test.csv \\
-        --outfile models/AMES.probes.csv
+        --outfile models/AMES.reference.csv
 """
 
 import argparse
@@ -33,7 +33,7 @@ import importlib.machinery
 import sys
 import types
 
-N_PROBES = 50
+N_MOLECULES = 50
 FAKE_PACKAGES = (
     "torch",
     "torch_geometric",
@@ -111,7 +111,7 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--molecules", required=True, help="CSV with a Drug column")
     parser.add_argument("--outfile", required=True)
-    parser.add_argument("-n", type=int, default=N_PROBES)
+    parser.add_argument("-n", type=int, default=N_MOLECULES)
     args = parser.parse_args()
 
     sys.meta_path.insert(0, _FakeFinder())
@@ -150,15 +150,15 @@ def main():
     picks = np.unique(np.linspace(0, len(order) - 1, args.n).round().astype(int))
     rows = order[picks]
 
-    probes = pd.DataFrame(
+    reference = pd.DataFrame(
         {"smiles": [smiles[i] for i in rows], "prediction": prediction[rows]}
     )
     if score is not None:
-        probes["score"] = score[rows]
-    probes.to_csv(args.outfile, index=False)
+        reference["score"] = score[rows]
+    reference.to_csv(args.outfile, index=False)
     print(
-        f"{args.outfile}: {len(probes)} probes from {len(smiles)} molecules, "
-        f"predictions {sorted(set(probes.prediction))[:3]}...",
+        f"{args.outfile}: {len(reference)} of {len(smiles)} molecules, "
+        f"predictions {sorted(set(reference.prediction))[:3]}...",
         file=sys.stderr,
     )
 

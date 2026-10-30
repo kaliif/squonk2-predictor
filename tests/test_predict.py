@@ -7,12 +7,12 @@ import pandas as pd
 import pytest
 from conftest import DATA_DIR, MODELS_DIR, make_obj
 from rdkit import Chem
+from reference import ReferenceMismatch, check_reference, read_reference
 from sklearn import ensemble, linear_model, svm
 
 import predict
 from featurizers import MACCSKeys
 from model_spec import UnsupportedModelError
-from probes import ProbeError, check_probes, read_probes
 from safe_loader import UnsafeModelError
 
 SMILES = [
@@ -116,7 +116,6 @@ def test_sdf_predictions(tmp_path, classifier_file, classifier):
         "activity_probability",
         "activity_leverage",
         "activity_in_domain",
-        "model_status",
         "error",
     ]
     mols = list(Chem.SDMolSupplier(str(SDF)))
@@ -127,7 +126,6 @@ def test_sdf_predictions(tmp_path, classifier_file, classifier):
         out.activity_probability.astype(float), classifier.predict_proba(X)[:, 1]
     )
     assert out.activity.tolist() == [str(v) for v in classifier.predict(X)]
-    assert set(out.model_status) == {"unverified"}
     assert set(out.error) == {""}
     assert (out.activity_in_domain == "False").sum() == counts["out_of_domain"]
 
@@ -210,97 +208,49 @@ def test_output_columns(tmp_path, fake_jaqpotpy, write_pickle, estimator, column
         "smiles",
         "activity",
         *columns,
-        "model_status",
         "error",
     ]
 
 
-# --- probes -----------------------------------------------------------------
+# --- reference predictions --------------------------------------------------
 
 
-def _probes(tmp_path, classifier):
-    X = _maccs(MOLS)
-    probes = pd.DataFrame(
-        {
-            "smiles": SMILES,
-            "prediction": classifier.predict(X),
-            "score": classifier.predict_proba(X)[:, 1],
-        }
-    )
-    path = tmp_path / "probes.csv"
-    probes.to_csv(path, index=False)
-    return path
+def test_warns_that_predictions_are_unverified(tmp_path, classifier_file, capsys):
+    predict.run(classifier_file, SDF, tmp_path / "out.csv")
+    assert "predictions can't be verified" in capsys.readouterr().out
 
 
-def test_probes_verify_model(tmp_path, classifier_file, classifier):
-    out, _ = _run(tmp_path, classifier_file, SDF, probes=_probes(tmp_path, classifier))
-    assert set(out.model_status) == {"verified"}
-
-
-def test_probes_without_score(tmp_path, classifier_file, classifier):
-    path = _probes(tmp_path, classifier)
-    pd.read_csv(path).drop(columns="score").to_csv(path, index=False)
-    predict.run(classifier_file, SDF, tmp_path / "out.csv", probes=path)
-
-
-@pytest.mark.parametrize(
-    "column, message",
-    [("prediction", "prediction"), ("score", "probability 0.\\d+, expected 0.123")],
-)
-def test_probe_mismatch_rejects_model(
-    tmp_path, classifier_file, classifier, column, message
-):
-    probes = _probes(tmp_path, classifier)
-    df = pd.read_csv(probes)
-    df.loc[2, column] = 1 - df.loc[2, column] if column == "prediction" else 0.123
-    df.to_csv(probes, index=False)
-    with pytest.raises(ProbeError, match=f"1 probe values.*{message}"):
-        predict.run(classifier_file, SDF, tmp_path / "out.csv", probes=probes)
-    assert not (tmp_path / "out.csv").exists()
-
-
-@pytest.mark.parametrize(
-    "content, message",
+REFERENCES = sorted(
     [
-        ("smiles\nCCO\n", "no prediction column"),
-        ("smiles,prediction\n", "no molecules"),
-        ("smiles,prediction\nCCO,\n", "without a prediction"),
-        ("smiles,prediction\nxyz,1\n", "invalid probe SMILES: xyz"),
+        *(DATA_DIR / "models").glob("*.reference.csv"),
+        *MODELS_DIR.glob("*.reference.csv"),
     ],
+    key=lambda p: (p.parent.name, p.name.lower()),
 )
-def test_bad_probe_files(tmp_path, classifier_file, content, message):
-    path = tmp_path / "probes.csv"
-    path.write_text(content)
-    with pytest.raises(ProbeError, match=message):
-        predict.run(classifier_file, SDF, tmp_path / "out.csv", probes=path)
 
 
-def test_probe_score_needs_single_score(tmp_path, fake_jaqpotpy, write_pickle):
-    est = ensemble.RandomForestRegressor(n_estimators=5, random_state=0)
-    est.fit(X_TRAIN, np.arange(6.0))
-    spec = predict.load_spec(write_pickle(_jmodel(fake_jaqpotpy, est)))
-    probes = pd.DataFrame(
-        {
-            "smiles": SMILES,
-            "prediction": est.predict(_maccs(MOLS)),
-            "score": 0.5,
-        }
+def _reference_model(reference):
+    return reference.with_name(
+        reference.name.removesuffix(".reference.csv") + ".jmodel"
     )
-    with pytest.raises(ProbeError, match="no single score"):
-        check_probes(spec, probes)
-    check_probes(spec, probes.drop(columns="score"))
-    probes.loc[0, "prediction"] += 0.01
-    with pytest.raises(ProbeError, match="1 probe values"):
-        check_probes(spec, probes.drop(columns="score"))
 
 
-LEGACY_PROBES = sorted(MODELS_DIR.glob("*.probes.csv"), key=lambda p: p.name.lower())
+@pytest.mark.parametrize(
+    "reference", REFERENCES, ids=lambda p: f"{p.parent.parent.name}/{p.name}"
+)
+def test_model_reproduces_reference(reference):
+    """The models reproduce predictions made by jaqpotpy itself (see
+    scripts/make_reference_predictions.py) on TDC ADMET test molecules. Those
+    in models/ are the legacy models, which aren't in the repository."""
+    check_reference(
+        predict.load_spec(_reference_model(reference)), read_reference(reference)
+    )
 
 
-@pytest.mark.skipif(not LEGACY_PROBES, reason="legacy models not available")
-@pytest.mark.parametrize("probes", LEGACY_PROBES, ids=lambda p: p.name)
-def test_legacy_model_reproduces_probes(probes):
-    """The legacy models reproduce predictions made by jaqpotpy itself (see
-    scripts/make_jaqpotpy_probes.py) on TDC ADMET test molecules."""
-    model = probes.with_name(probes.name.removesuffix(".probes.csv") + ".jmodel")
-    check_probes(predict.load_spec(model), read_probes(probes))
+def test_reference_mismatch_is_detected():
+    path = DATA_DIR / "models" / "CYP2D6_Veith.reference.csv"
+    spec = predict.load_spec(_reference_model(path))
+    reference = read_reference(path)
+    reference.loc[0, "prediction"] = 1 - reference.loc[0, "prediction"]
+    with pytest.raises(ReferenceMismatch, match="1 reference values"):
+        check_reference(spec, reference)

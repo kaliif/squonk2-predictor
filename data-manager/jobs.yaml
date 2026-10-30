@@ -12,9 +12,7 @@ jobs:
     description: >-
       Predicts values for molecules using a pre-trained scikit-learn model
       that you supply. The descriptors the model was trained on are
-      calculated for the molecules. Supply probe molecules with known
-      predictions to verify the model; without them the results are marked
-      as unverified.
+      calculated for the molecules.
     version: '1.0.0'
     category: predictive models
     keywords:
@@ -33,7 +31,6 @@ jobs:
       --model '{{ modelFile }}'
       --molecules '{{ inputFile }}'
       --outfile '{{ outputFile }}'
-      {% if probesFile is defined %}--probes '{{ probesFile }}'{% endif %}
       {% if delimiter is defined %}--delimiter {{ delimiter }}{% endif %}
       {% if readHeader is defined and readHeader %}--read-header{% endif %}
     variables:
@@ -59,11 +56,6 @@ jobs:
             - chemical/x-mdl-sdfile
             - squonk/x-smiles
             - chemical/x-daylight-smiles
-            type: file
-          probesFile:
-            title: Probe molecules with expected predictions (.csv)
-            mime-types:
-            - text/csv
             type: file
       outputs:
         type: object
@@ -99,11 +91,10 @@ jobs:
             type: boolean
             default: false
     tests:
-      sdf-verified:
+      sdf:
         inputs:
           modelFile: data/models/CYP2D6_Veith.jmodel
           inputFile: data/candidates-10.sdf
-          probesFile: data/models/CYP2D6_Veith.probes.csv
         options:
           outputFile: predictions.csv
         checks:
@@ -113,7 +104,7 @@ jobs:
             checks:
             - exists: true
             - lineCount: 11
-      smiles-unverified:
+      smiles:
         inputs:
           modelFile: data/models/clearance_hepatocyte_az.jmodel
           inputFile: data/10.smi
@@ -130,7 +121,6 @@ jobs:
         inputs:
           modelFile: data/models/CYP2D6_Veith.jmodel
           inputFile: data/10-error.smi
-          probesFile: data/models/CYP2D6_Veith.probes.csv
         options:
           outputFile: predictions.csv
         checks:
@@ -144,7 +134,6 @@ jobs:
         inputs:
           modelFile: data/models/clearance_hepatocyte_az.jmodel
           inputFile: data/candidates-10-error.sdf
-          probesFile: data/models/clearance_hepatocyte_az.probes.csv
         options:
           outputFile: predictions.csv
         checks:
@@ -154,11 +143,10 @@ jobs:
             checks:
             - exists: true
             - lineCount: 11
-      mordred-verified:
+      mordred:
         inputs:
           modelFile: data/models/dili-3trees.jmodel
           inputFile: data/candidates-10.sdf
-          probesFile: data/models/dili-3trees.probes.csv
         options:
           outputFile: predictions.csv
         checks:
@@ -172,19 +160,6 @@ jobs:
         inputs:
           modelFile: data/models/bare-estimator.pkl
           inputFile: data/10.smi
-        options:
-          outputFile: predictions.csv
-        checks:
-          exitCode: 1
-          outputs:
-          - name: predictions.csv
-            checks:
-            - exists: false
-      wrong-probes-rejected:
-        inputs:
-          modelFile: data/models/CYP2D6_Veith.jmodel
-          inputFile: data/10.smi
-          probesFile: data/models/CYP2D6_Veith.wrong-probes.csv
         options:
           outputFile: predictions.csv
         checks:

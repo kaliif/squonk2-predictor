@@ -23,27 +23,20 @@ rdkit, numpy, mordred and Python are held back by the jaqpotpy models: later
 rdkit releases change descriptors they were trained on, and mordred 1.2.0
 needs numpy 1. See the comments in `pyproject.toml`.
 
-# Verification with probes
+# Unverified predictions
 Descriptor implementations change between library versions and estimators can
 behave differently in another scikit-learn version, so a model can load and
-run but give different predictions from when it was created. To catch this,
-supply a CSV of probe molecules with the predictions the model gave at
-training time:
-
-    smiles,prediction,score
-    CCO,0,0.12
-
-`score` is optional: the probability of the second class, or the decision
-score, of a binary classifier. A model that doesn't reproduce its probes is
-rejected; without probes, predictions are marked `unverified`.
+run but give different predictions from when it was created. A model file
+doesn't record the predictions it made, so the job can't check this and warns
+that its predictions are unverified.
 
 # Output
 A CSV with a row per input molecule, in input order: `id`, `smiles`, the
 prediction (named after the model's target), depending on the model
 `<target>_probability` or `<target>_score` (one column per class for
 multiclass models), `<target>_leverage` and `<target>_in_domain` for models
-with an applicability domain, `model_status` (`verified` or `unverified`) and
-`error` for molecules that couldn't be predicted.
+with an applicability domain, and `error` for molecules that couldn't be
+predicted.
 
 # Running locally
 
@@ -57,8 +50,10 @@ second (`--delimiter`, `--read-header`).
 
     poetry run pytest
 
-Tests against the legacy models run only when `models/` holds the `.jmodel`
-files and their `.probes.csv` files, which aren't in the repository.
+The tests check that the models reproduce reference predictions made by
+jaqpotpy itself: the test models in `data/models/` always, the legacy models
+only when `models/` holds the `.jmodel` files and their `.reference.csv`
+files, which aren't in the repository.
 
 # Job tests
 The job tests in `data-manager/jobs.yaml` run with
@@ -72,10 +67,10 @@ whatever image the job definition's tag refers to:
 `jote --dry-run` only validates the job definition. The test data is described
 in `data/README.md`.
 
-# Probes for jaqpotpy models
-`scripts/make_jaqpotpy_probes.py` writes a probe file for a jaqpotpy model
-using jaqpotpy itself, so the probes record what the original software
-predicted. It runs in a separate environment that reproduces the one the
+# Reference predictions for jaqpotpy models
+`scripts/make_reference_predictions.py` writes reference predictions for a
+jaqpotpy model using jaqpotpy itself, so they record what the original
+software predicted. It runs in a separate environment that reproduces the one the
 models were trained in; its docstring says how to set that up.
 
 The job uses the original `mordred` 1.2.0 rather than `mordredcommunity`,

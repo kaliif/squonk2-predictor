@@ -5,8 +5,9 @@ recognised and the descriptors it was trained on are calculated for the
 molecules. Models that don't say which descriptors they need, or whose
 parts aren't supported, are rejected.
 
-A model whose predictions can't be verified against probe molecules (see
-probes.py) is still used, but its results are reported as unverified.
+Nothing in a model file records the predictions the model made when it was
+created, so whether the descriptors and estimator here still reproduce them
+can't be checked; the job warns about this.
 
 The output CSV has a row per input molecule, in input order, with the id,
 SMILES, the prediction and, depending on the model, a probability or score
@@ -33,7 +34,6 @@ from sklearn.base import BaseEstimator
 
 import jaqpotpy_adapter
 from model_spec import ModelSpec, UnsupportedModelError, check_spec
-from probes import ProbeError, check_probes, read_probes
 from safe_loader import ModelLoadError, UnsafeModelError, load_model_file, stub_name
 
 BATCH_SIZE = 1000
@@ -114,7 +114,6 @@ def run(
     model,
     molecules,
     outfile,
-    probes=None,
     delimiter="\t",
     read_header=False,
 ) -> dict:
@@ -129,19 +128,12 @@ def run(
     for warning in spec.warnings:
         _event(f"Warning: {warning}", level=logging.WARNING)
 
-    if probes:
-        probe_table = read_probes(probes)
-        check_probes(spec, probe_table)
-        status = "verified"
-        _event(f"Model verified: reproduces all {len(probe_table)} probe predictions")
-    else:
-        status = "unverified"
-        _event(
-            "Model is UNVERIFIED: no probe molecules were given, so it is not "
-            "known whether the descriptors and estimator still reproduce the "
-            "predictions made when the model was created",
-            level=logging.WARNING,
-        )
+    _event(
+        "Warning: predictions can't be verified: it is not known whether the "
+        "descriptors and estimator here reproduce the predictions made when "
+        "the model was created",
+        level=logging.WARNING,
+    )
 
     target = spec.target_name
     # prediction columns are named after the target so outputs of several
@@ -155,7 +147,7 @@ def run(
     records = read_molecules(molecules, delimiter=delimiter, read_header=read_header)
     with open(outfile, "w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["id", "smiles", *columns, "model_status", "error"])
+        writer.writerow(["id", "smiles", *columns, "error"])
         while batch := list(islice(records, BATCH_SIZE)):
             table, ok = spec.predict([mol for _, _, mol in batch])
             for i, (name, smiles, mol) in enumerate(batch):
@@ -169,7 +161,7 @@ def run(
                         if mol is None
                         else "descriptors can't be calculated"
                     )
-                writer.writerow([name, smiles, *values, status, error])
+                writer.writerow([name, smiles, *values, error])
             counts["read"] += len(batch)
             counts["predicted"] += int(ok.sum())
             if "in_domain" in table:
@@ -195,11 +187,6 @@ def main():
     )
     parser.add_argument("--outfile", required=True, help="Output CSV file")
     parser.add_argument(
-        "--probes",
-        help="CSV of probe molecules (smiles, prediction[, score]) the model "
-        "must reproduce",
-    )
-    parser.add_argument(
         "--delimiter",
         default="tab",
         help=f"Delimiter of a SMILES file: {', '.join(DELIMITERS)} or a character",
@@ -217,7 +204,6 @@ def main():
             model=args.model,
             molecules=args.molecules,
             outfile=args.outfile,
-            probes=args.probes,
             delimiter=DELIMITERS.get(args.delimiter, args.delimiter),
             read_header=args.read_header,
         )
@@ -225,8 +211,6 @@ def main():
         _fatal(f"Model rejected as unsafe: {exc}")
     except (ModelLoadError, UnsupportedModelError) as exc:
         _fatal(f"Model can't be used: {exc}")
-    except ProbeError as exc:
-        _fatal(f"Model failed verification: {exc}")
 
 
 if __name__ == "__main__":

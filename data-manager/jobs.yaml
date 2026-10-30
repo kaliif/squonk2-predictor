@@ -3,7 +3,7 @@ kind: DataManagerJobDefinition
 kind-version: '2021.1'
 
 name: Predictions with user-supplied scikit-learn models
-collection: im-predict-local
+collection: im-virtual-screening
 
 jobs:
 

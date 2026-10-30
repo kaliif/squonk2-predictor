@@ -37,7 +37,7 @@ from probes import ProbeError, check_probes, read_probes
 from safe_loader import ModelLoadError, UnsafeModelError, load_model_file, stub_name
 
 BATCH_SIZE = 1000
-DELIMITERS = {"tab": "\t", "space": " ", "comma": ",", "semicolon": ";"}
+DELIMITERS = {"tab": "\t", "space": " ", "comma": ",", "semicolon": ";", "pipe": "|"}
 
 
 def _event(msg, level=logging.INFO):

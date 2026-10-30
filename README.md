@@ -54,6 +54,18 @@ second (`--delimiter`, `--read-header`).
 Tests against the legacy models run only when `models/` holds the `.jmodel`
 files and their `.probes.csv` files, which aren't in the repository.
 
+# Job tests
+The job tests in `data-manager/jobs.yaml` run with
+[jote](https://pypi.org/project/im-jote/) against the container image. Build
+the image from the working tree and point jote at it, otherwise it tests
+whatever image the job definition's tag refers to:
+
+    docker build -t informaticsmatters/squonk2-predict-local:dev .
+    jote --image-tag dev
+
+`jote --dry-run` only validates the job definition. The test data is described
+in `data/README.md`.
+
 # Probes for jaqpotpy models
 `scripts/make_jaqpotpy_probes.py` writes a probe file for a jaqpotpy model
 using jaqpotpy itself, so the probes record what the original software

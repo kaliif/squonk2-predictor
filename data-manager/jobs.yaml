@@ -2,23 +2,26 @@
 kind: DataManagerJobDefinition
 kind-version: '2021.1'
 
-name: Predict values using scikit-learn models
+name: Predictions with user-supplied scikit-learn models
 collection: im-predict-local
 
 jobs:
 
   predict:
-    name: Predict values
+    name: Predict with your model
     description: >-
-      Predicts values for molecules using a pre-trained scikit-learn model.
-      The descriptors the model was trained on are calculated for the
-      molecules. Supply probe molecules with known predictions to verify the
-      model; without them the results are marked as unverified.
+      Predicts values for molecules using a pre-trained scikit-learn model
+      that you supply. The descriptors the model was trained on are
+      calculated for the molecules. Supply probe molecules with known
+      predictions to verify the model; without them the results are marked
+      as unverified.
     version: '1.0.0'
-    category: predict
+    category: predictive models
     keywords:
+    - predictive models
     - predict
     - scikit-learn
+    - jaqpot
     image:
       name: informaticsmatters/squonk2-predict-local
       tag: latest
@@ -59,10 +62,6 @@ jobs:
             type: file
           probesFile:
             title: Probe molecules with expected predictions (.csv)
-            description: >-
-              Columns smiles, prediction and optionally score (probability or
-              decision score of a binary classifier). The model is rejected if
-              it doesn't reproduce them.
             mime-types:
             - text/csv
             type: file
@@ -70,7 +69,7 @@ jobs:
         type: object
         properties:
           outputFile:
-            title: Output file
+            title: Predictions
             mime-types:
             - text/csv
             creates: '{{ outputFile }}'
@@ -81,7 +80,7 @@ jobs:
         - outputFile
         properties:
           outputFile:
-            title: Output file
+            title: Output file name (.csv)
             type: string
             pattern: "^[A-Za-z0-9_/\\.\\-]+$"
             default: predictions.csv
@@ -93,8 +92,104 @@ jobs:
             - space
             - comma
             - semicolon
+            - pipe
             default: tab
           readHeader:
             title: SMILES input file has a header line
             type: boolean
             default: false
+    tests:
+      sdf-verified:
+        inputs:
+          modelFile: data/models/CYP2D6_Veith.jmodel
+          inputFile: data/candidates-10.sdf
+          probesFile: data/models/CYP2D6_Veith.probes.csv
+        options:
+          outputFile: predictions.csv
+        checks:
+          exitCode: 0
+          outputs:
+          - name: predictions.csv
+            checks:
+            - exists: true
+            - lineCount: 11
+      smiles-unverified:
+        inputs:
+          modelFile: data/models/clearance_hepatocyte_az.jmodel
+          inputFile: data/10.smi
+        options:
+          outputFile: predictions.csv
+        checks:
+          exitCode: 0
+          outputs:
+          - name: predictions.csv
+            checks:
+            - exists: true
+            - lineCount: 11
+      smiles-with-invalid-molecule:
+        inputs:
+          modelFile: data/models/CYP2D6_Veith.jmodel
+          inputFile: data/10-error.smi
+          probesFile: data/models/CYP2D6_Veith.probes.csv
+        options:
+          outputFile: predictions.csv
+        checks:
+          exitCode: 0
+          outputs:
+          - name: predictions.csv
+            checks:
+            - exists: true
+            - lineCount: 11
+      sdf-with-invalid-molecule:
+        inputs:
+          modelFile: data/models/clearance_hepatocyte_az.jmodel
+          inputFile: data/candidates-10-error.sdf
+          probesFile: data/models/clearance_hepatocyte_az.probes.csv
+        options:
+          outputFile: predictions.csv
+        checks:
+          exitCode: 0
+          outputs:
+          - name: predictions.csv
+            checks:
+            - exists: true
+            - lineCount: 11
+      mordred-verified:
+        inputs:
+          modelFile: data/models/dili-3trees.jmodel
+          inputFile: data/candidates-10.sdf
+          probesFile: data/models/dili-3trees.probes.csv
+        options:
+          outputFile: predictions.csv
+        checks:
+          exitCode: 0
+          outputs:
+          - name: predictions.csv
+            checks:
+            - exists: true
+            - lineCount: 11
+      bare-estimator-rejected:
+        inputs:
+          modelFile: data/models/bare-estimator.pkl
+          inputFile: data/10.smi
+        options:
+          outputFile: predictions.csv
+        checks:
+          exitCode: 1
+          outputs:
+          - name: predictions.csv
+            checks:
+            - exists: false
+      wrong-probes-rejected:
+        inputs:
+          modelFile: data/models/CYP2D6_Veith.jmodel
+          inputFile: data/10.smi
+          probesFile: data/models/CYP2D6_Veith.wrong-probes.csv
+        options:
+          outputFile: predictions.csv
+        checks:
+          exitCode: 1
+          outputs:
+          - name: predictions.csv
+            checks:
+            - exists: false

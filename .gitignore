@@ -20,3 +20,4 @@ __pycache__/
 
 # model files and job output
 *.jmodel
+!data/models/*.jmodel

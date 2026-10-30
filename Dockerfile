@@ -1,4 +1,4 @@
-FROM python:3.11.11-slim-bullseye as python-base
+FROM python:3.12.16-slim-trixie AS python-base
 
 ENV PYTHONUNBUFFERED=1
 ENV HOME=/code
@@ -8,7 +8,8 @@ ENV HOME=/code
 # up in final image where it's not needed
 FROM python-base AS poetry-base
 
-ARG POETRY_VERSION=1.8.3
+# the version that writes poetry.lock; older ones can't read its format
+ARG POETRY_VERSION=2.4.1
 RUN pip install --no-cache-dir poetry==${POETRY_VERSION}
 
 WORKDIR /
@@ -20,11 +21,11 @@ RUN POETRY_VIRTUALENVS_IN_PROJECT=true poetry install --no-root --only main --no
 
 # final stage. only copy the venv with installed packages and point
 # paths to it
-FROM python-base as final
+FROM python-base AS final
 
 COPY --from=poetry-base /.venv /.venv
 
-ENV PYTHONPATH="${PYTHONPATH}:/.venv/lib/python3.11/site-packages/"
+ENV PYTHONPATH="${PYTHONPATH}:/.venv/lib/python3.12/site-packages/"
 ENV PATH=/.venv/bin:$PATH
 
 

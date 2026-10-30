@@ -14,8 +14,14 @@ a model file can't run code. Supported formats:
   external features or preprocessing steps
 
 A bare scikit-learn estimator is rejected, because nothing records which
-descriptors it was trained on. The job image pins scikit-learn 1.3.2; models
+descriptors it was trained on. The job runs scikit-learn 1.9.1; models
 trained with another version are flagged, and rejected if they can't run.
+Trees pickled by scikit-learn < 1.4, which includes the jaqpotpy 1.0.x models,
+are converted to the current format on loading.
+
+rdkit, numpy, mordred and Python are held back by the jaqpotpy models: later
+rdkit releases change descriptors they were trained on, and mordred 1.2.0
+needs numpy 1. See the comments in `pyproject.toml`.
 
 # Verification with probes
 Descriptor implementations change between library versions and estimators can

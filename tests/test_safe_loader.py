@@ -23,6 +23,7 @@ from sklearn import (
     svm,
     tree,
 )
+from sklearn.exceptions import InconsistentVersionWarning
 
 from safe_loader import (
     ModelLoadError,
@@ -286,7 +287,7 @@ def test_joblib_array_layouts(tmp_path):
         assert loaded[key].dtype == value.dtype.newbyteorder("=")
 
 
-def test_version_warnings_are_deduplicated(write_pickle, fitted, monkeypatch):
+def test_records_sklearn_versions(write_pickle, fitted, monkeypatch):
     import sklearn.base
 
     # sklearn records its version when pickling
@@ -294,11 +295,55 @@ def test_version_warnings_are_deduplicated(write_pickle, fitted, monkeypatch):
     path = write_pickle(fitted["rf_random_state_object"])
     monkeypatch.undo()
     result = load_model_file(path)
-    # one per estimator class, not one per tree
-    version_warnings = [w for w in result.warnings if "0.0.1" in w]
-    assert len(version_warnings) == 2
-    assert any("RandomForestRegressor" in w for w in version_warnings)
-    assert any("DecisionTreeRegressor" in w for w in version_warnings)
+    assert result.sklearn_versions == ["0.0.1"]
+    # reported from sklearn_versions rather than a warning per estimator class
+    assert not any("0.0.1" in w for w in result.warnings)
+
+
+def _as_sklearn_1_3(estimators, monkeypatch):
+    """Make fitted trees look as scikit-learn 1.3 pickled them: classifier
+    nodes hold weighted class counts rather than fractions, and there is no
+    monotonic_cst. Returns the pickle."""
+    import sklearn.base
+
+    for est in estimators:
+        del est.monotonic_cst
+        if isinstance(est, tree.DecisionTreeClassifier):
+            state = est.tree_.__getstate__()
+            weights = est.tree_.weighted_n_node_samples[:, None, None]
+            state["values"] = state["values"] * weights
+            est.tree_.__setstate__(state)
+    monkeypatch.setattr(sklearn.base, "__version__", "1.3.2")
+    data = pickle.dumps(estimators)
+    monkeypatch.undo()
+    return data
+
+
+def test_old_classifier_trees_are_converted(tmp_path, monkeypatch):
+    rng = np.random.default_rng(0)
+    X, y = rng.random((60, 4)), rng.integers(0, 3, 60)
+    forest = ensemble.RandomForestClassifier(n_estimators=3, random_state=0)
+    forest.fit(X, y, sample_weight=rng.random(60) + 0.5)
+    regressor = tree.DecisionTreeRegressor(random_state=0).fit(X, y.astype(float))
+    expected = forest.predict_proba(X), regressor.predict(X)
+
+    path = tmp_path / "old.pkl"
+    path.write_bytes(
+        _as_sklearn_1_3([forest, *forest.estimators_, regressor], monkeypatch)
+    )
+    # unconverted, the counts give wrong probabilities
+    with pytest.warns(InconsistentVersionWarning):
+        plain = pickle.loads(path.read_bytes())[0]
+    assert not np.allclose(plain.predict_proba(X), expected[0])
+
+    result = load_model_file(path)
+    loaded_forest, loaded_regressor = result.obj[0], result.obj[-1]
+    np.testing.assert_allclose(loaded_forest.predict_proba(X), expected[0])
+    np.testing.assert_array_equal(loaded_regressor.predict(X), expected[1])
+    assert loaded_regressor.monotonic_cst is None
+    assert result.sklearn_versions == ["1.3.2"]
+    # the forest's trees are listed twice in the pickle but stored once
+    assert any("converted 3 classifier trees" in w for w in result.warnings)
 
 
 # --- stubbed packages -------------------------------------------------------

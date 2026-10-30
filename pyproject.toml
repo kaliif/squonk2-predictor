@@ -9,26 +9,35 @@ authors = [
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.12"
-rdkit = "^2023.9.6"
-scikit-learn = "1.3.2"
-joblib = "^1.3"
-pandas = "^2.2.2"
+# Python, rdkit, numpy and mordred are held back by the legacy jaqpotpy
+# models: later rdkit releases change descriptors they were trained on,
+# rdkit 2023.9.6 has no wheels beyond Python 3.12 and is built against
+# numpy 1, and mordred 1.2.0 doesn't import with numpy 2.
+python = ">=3.12,<3.13"
+rdkit = "2023.9.6"
+numpy = "^1.26.4"
+# trees pickled by scikit-learn < 1.4 are converted on loading, see
+# safe_loader.py
+scikit-learn = "1.9.1"
+pandas = "^2.3.3"
 # the original mordred, not mordredcommunity: jaqpotpy 1.0.x models were
 # trained with it, and mordredcommunity perceives rings differently, which
 # changes ring counts and descriptors derived from them
 mordred = "1.2.0"
-im-data-manager-job-utilities = "^1.2.0"
+# mordred 1.2.0 imports distutils, which Python 3.12 provides only through
+# setuptools
+setuptools = "*"
+im-data-manager-job-utilities = "^1.4.1"
 
 [tool.poetry.group.dev.dependencies]
-im-jote = "^0.10.7"
-pre-commit = "^3"
-pylint = "^3"
-isort = "^5.13.2"
-black = "^24.8.0"
-mypy = "^1.11.1"
-ipython = "^8.32.0"
-pytest = "^8"
+im-jote = "^0.14.0"
+pre-commit = "^4.7.0"
+pylint = "^4.1.3"
+isort = "^9.0.2"
+black = "^26.10.1"
+mypy = "^2.4.1"
+ipython = "^9.18.0"
+pytest = "^9.2.0"
 
 
 [build-system]

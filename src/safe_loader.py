@@ -15,18 +15,28 @@ function the file asks for through an allowlist:
 
 joblib stores numpy arrays as raw bytes after a NumpyArrayWrapper marker. Those
 are read here rather than by joblib, because joblib unpickles object arrays
-with an unrestricted pickle.load.
+with an unrestricted pickle.load. joblib's compression is undone with the
+standard library, so joblib itself isn't needed.
+
+Estimators pickled by an older scikit-learn are brought up to date where the
+pickled state has changed meaning: see _upgrade_estimator_state.
 """
 
+import bz2
 import codecs
+import contextlib
+import gzip
 import importlib
+import io
+import lzma
 import pickle
+import re
 import warnings
+import zlib
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from joblib.numpy_pickle_utils import _read_fileobject
 
 # top-level packages whose objects are replaced by inert stubs, never imported
 STUBBED_PACKAGES = ("jaqpotpy", "mordred", "onnx")
@@ -149,6 +159,47 @@ def stub_name(obj) -> str | None:
 class LoadResult:
     obj: Any
     warnings: list[str] = field(default_factory=list)
+    # scikit-learn versions the estimators in the file were pickled with
+    sklearn_versions: list[str] = field(default_factory=list)
+
+
+def _version_tuple(version: str) -> tuple[int, int]:
+    # e.g. '1.3.2' or 'pre-0.18', which old pickles without a version get
+    match = re.search(r"(\d+)\.(\d+)", version)
+    return (int(match[1]), int(match[2])) if match else (0, 0)
+
+
+def _upgrade_estimator_state(estimator, state: dict, version: str) -> int:
+    """Update the pickled state of an estimator from an older scikit-learn to
+    what this version expects, in place. Returns the number of trees whose
+    data was converted.
+
+    scikit-learn doesn't support unpickling estimators across versions, and
+    for trees from before 1.4 it silently gives wrong results: classifier trees
+    then stored weighted class counts in their nodes, later versions store
+    class fractions, so predicted probabilities came out wrong. Trees from
+    before 1.4 also lack monotonic_cst, which 1.4 to 1.8 can't predict without.
+    """
+    # pylint: disable=import-outside-toplevel
+    from sklearn.base import ClassifierMixin
+    from sklearn.tree import BaseDecisionTree
+    from sklearn.tree._tree import Tree  # pylint: disable=no-name-in-module
+
+    if _version_tuple(version) >= (1, 4) or not isinstance(estimator, BaseDecisionTree):
+        return 0
+    state.setdefault("monotonic_cst", None)
+    tree = state.get("tree_")
+    # the estimator class decides, as the instance has no attributes yet
+    if not (isinstance(estimator, ClassifierMixin) and isinstance(tree, Tree)):
+        return 0
+    tree_state = tree.__getstate__()
+    values = tree_state["values"]
+    totals = values.sum(axis=2, keepdims=True)
+    tree_state["values"] = np.divide(
+        values, totals, out=np.zeros_like(values), where=totals > 0
+    )
+    tree.__setstate__(tree_state)
+    return 1
 
 
 def _is_sklearn_allowed(module: str, name: str, obj) -> bool:
@@ -206,6 +257,8 @@ class RestrictedUnpickler(pickle._Unpickler):  # pylint: disable=protected-acces
         self._fh = file
         self.rejected = rejected if rejected is not None else set()
         self.stubs = stubs if stubs is not None else {}
+        self.sklearn_versions: set[str] = set()
+        self.converted_trees = 0
 
     def find_class(self, module, name):
         if module.split(".")[0] in STUBBED_PACKAGES:
@@ -232,6 +285,18 @@ class RestrictedUnpickler(pickle._Unpickler):  # pylint: disable=protected-acces
         raise pickle.UnpicklingError("persistent IDs are not supported")
 
     def load_build(self):
+        from sklearn.base import (
+            BaseEstimator,  # pylint: disable=import-outside-toplevel
+        )
+
+        state, instance = self.stack[-1], self.stack[-2]
+        if isinstance(instance, BaseEstimator) and isinstance(state, dict):
+            version = state.get("_sklearn_version")
+            if isinstance(version, str):
+                self.sklearn_versions.add(version)
+                self.converted_trees += _upgrade_estimator_state(
+                    instance, state, version
+                )
         super().load_build()
         if isinstance(self.stack[-1], _JoblibArrayWrapper):
             wrapper = self.stack.pop()
@@ -248,7 +313,10 @@ class RestrictedUnpickler(pickle._Unpickler):  # pylint: disable=protected-acces
         if dtype.hasobject:
             # nested pickle stream for the array's Python objects
             nested = RestrictedUnpickler(self._fh, self.rejected, self.stubs)
-            return nested.load()
+            array = nested.load()
+            self.sklearn_versions |= nested.sklearn_versions
+            self.converted_trees += nested.converted_trees
+            return array
 
         if getattr(wrapper, "numpy_array_alignment_bytes", None) is not None:
             padding = int.from_bytes(self._fh.read(1), byteorder="little")
@@ -269,19 +337,59 @@ class RestrictedUnpickler(pickle._Unpickler):  # pylint: disable=protected-acces
         return array
 
 
+# joblib.dump compresses with a standard format, recognised by its first bytes
+_DECOMPRESSORS = (
+    (b"\x1f\x8b", lambda f: gzip.GzipFile(fileobj=f)),
+    (b"BZh", bz2.BZ2File),
+    (b"\xfd7zXZ\x00", lambda f: lzma.LZMAFile(f, format=lzma.FORMAT_XZ)),
+    (b"]\x00\x00", lambda f: lzma.LZMAFile(f, format=lzma.FORMAT_ALONE)),
+    # zlib streams start with 0x78 for the default window size, which no
+    # pickle opcode does
+    (b"\x78", lambda f: io.BytesIO(_zlib_decompress(f.read()))),
+)
+_UNSUPPORTED = (
+    (b"\x04\x22\x4d\x18", "lz4 compressed files are not supported"),
+    # joblib < 0.10, which also reads companion files from disk
+    (b"ZF", "joblib files older than version 0.10 are not supported"),
+)
+
+
+def _zlib_decompress(data):
+    try:
+        return zlib.decompress(data)
+    except zlib.error as exc:
+        raise ModelLoadError(f"could not read model file: {exc}") from exc
+
+
+@contextlib.contextmanager
+def _open_model_file(path):
+    """The file, decompressed if it is compressed."""
+    with open(path, "rb") as f:
+        head = f.read(6)
+        f.seek(0)
+        for magic, message in _UNSUPPORTED:
+            if head.startswith(magic):
+                raise ModelLoadError(message)
+        for magic, open_ in _DECOMPRESSORS:
+            if head.startswith(magic):
+                with open_(f) as decompressed:
+                    yield decompressed
+                return
+        yield f
+
+
 def load_model_file(path) -> LoadResult:
     """Load a pickle or joblib model file through the allowlist."""
+    # pylint: disable=import-outside-toplevel
+    from sklearn.exceptions import InconsistentVersionWarning
+
     rejected: set[str] = set()
-    with open(path, "rb") as f, _read_fileobject(f, str(path), None) as fobj:
-        if isinstance(fobj, str):
-            # joblib < 0.10 format, which reads companion files from disk
-            raise ModelLoadError(
-                "joblib files older than version 0.10 are not supported"
-            )
+    with _open_model_file(path) as fobj:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
+            unpickler = RestrictedUnpickler(fobj, rejected)
             try:
-                obj = RestrictedUnpickler(fobj, rejected).load()
+                obj = unpickler.load()
             except UnsafeModelError:
                 raise
             except Exception as exc:
@@ -293,6 +401,20 @@ def load_model_file(path) -> LoadResult:
 
     if rejected:
         raise UnsafeModelError(rejected)
-    # e.g. a version warning is raised once per tree in a forest
-    messages = list(dict.fromkeys(str(w.message) for w in caught))
-    return LoadResult(obj, messages)
+    # version mismatches are reported from sklearn_versions instead of
+    # scikit-learn's warning for every estimator class
+    messages = [
+        str(w.message)
+        for w in caught
+        if not issubclass(w.category, InconsistentVersionWarning)
+    ]
+    if unpickler.converted_trees:
+        messages.append(
+            f"converted {unpickler.converted_trees} classifier trees from the "
+            "format of scikit-learn < 1.4"
+        )
+    return LoadResult(
+        obj,
+        list(dict.fromkeys(messages)),
+        sorted(unpickler.sklearn_versions, key=_version_tuple),
+    )

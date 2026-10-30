@@ -66,6 +66,7 @@ def load_spec(path) -> ModelSpec:
     else:
         what = stub_name(obj) or type(obj).__name__
         raise UnsupportedModelError(f"unrecognised model file contents ({what})")
+    spec.sklearn_versions = result.sklearn_versions
     spec.warnings[:0] = result.warnings
     check_spec(spec)
     return spec

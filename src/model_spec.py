@@ -50,6 +50,9 @@ class ModelSpec:
     # values are the same, e.g. nearest neighbour searches break distance
     # ties differently for integer and float input
     input_dtype: type = np.float64
+    # scikit-learn versions the estimators were pickled with, as recorded by
+    # the loader (scikit-learn drops them from the unpickled objects)
+    sklearn_versions: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -184,13 +187,7 @@ def check_spec(spec: ModelSpec) -> None:
             f"was fitted on {n_in}"
         )
 
-    versions = sorted(
-        {
-            v
-            for e in iter_estimators(spec.estimator)
-            if (v := getattr(e, "_sklearn_version", None))
-        }
-    )
+    versions = spec.sklearn_versions
     # an estimator unpickled from another sklearn version may fail or silently
     # behave differently; failing is caught by a test prediction
     try:
@@ -205,7 +202,7 @@ def check_spec(spec: ModelSpec) -> None:
     if other:
         spec.warnings.append(
             f"trained with scikit-learn {', '.join(other)}, running {sklearn.__version__}; "
-            "predictions are not verified to be identical"
+            "scikit-learn doesn't guarantee the same predictions across versions"
         )
 
     kind = spec.output_kind

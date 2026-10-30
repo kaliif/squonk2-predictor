@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "squonk2-predict-local"
+name = "squonk2-predictor"
 version = "0.1.0"
 description = "Squonk2 job that predicts values for molecules using a pre-trained scikit-learn model"
 authors = [

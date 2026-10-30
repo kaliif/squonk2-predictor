@@ -15,10 +15,10 @@ on:
         required: false
 
 jobs:
-  build-predict-local:
+  build-predictor:
     uses: ./.github/workflows/build-image-with-push-option.yaml
     secrets: inherit
     with:
-      image-name: squonk2-predict-local
+      image-name: squonk2-predictor
       image-tag: ${{ inputs.image-tag }}
       image-push: ${{ inputs.image-push }}

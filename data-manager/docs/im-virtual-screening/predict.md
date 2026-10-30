@@ -1,6 +1,6 @@
 # Job: predict
 
-This describes how to run the `predict` job in the `im-predict-local`
+This describes how to run the `predict` job in the `im-virtual-screening`
 collection.
 
 ## What the job does

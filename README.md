@@ -1,4 +1,4 @@
-# squonk2-predict-local
+# squonk2-predictor
 
 A Squonk2 Data Manager job that takes a pre-trained scikit-learn model and a
 set of molecules, calculates the descriptors the model needs and predicts
@@ -66,7 +66,7 @@ The job tests in `data-manager/jobs.yaml` run with
 the image from the working tree and point jote at it, otherwise it tests
 whatever image the job definition's tag refers to:
 
-    docker build -t informaticsmatters/squonk2-predict-local:dev .
+    docker build -t informaticsmatters/squonk2-predictor:dev .
     jote --image-tag dev
 
 `jote --dry-run` only validates the job definition. The test data is described

@@ -23,7 +23,7 @@ jobs:
     - scikit-learn
     - jaqpot
     image:
-      name: informaticsmatters/squonk2-predictor
+      name: kaliif/squonk2-predictor
       tag: latest
       project-directory: /data
       working-directory: /data

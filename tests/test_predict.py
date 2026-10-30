@@ -5,7 +5,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import DATA_DIR, MODELS_DIR, TEST_DATA_DIR, make_obj
+from conftest import DATA_DIR, MODELS_DIR, make_obj
 from rdkit import Chem
 from sklearn import ensemble, linear_model, svm
 
@@ -294,17 +294,13 @@ def test_probe_score_needs_single_score(tmp_path, fake_jaqpotpy, write_pickle):
         check_probes(spec, probes.drop(columns="score"))
 
 
-REFERENCE = pd.read_csv(TEST_DATA_DIR / "jaqpotpy_reference.csv")
+LEGACY_PROBES = sorted(MODELS_DIR.glob("*.probes.csv"), key=lambda p: p.name.lower())
 
 
-@pytest.mark.skipif(not MODELS_DIR.is_dir(), reason="legacy models not available")
-@pytest.mark.parametrize("model_name", sorted(REFERENCE.model.unique(), key=str.lower))
-def test_legacy_model_reproduces_probes(tmp_path, model_name):
-    path = MODELS_DIR / f"{model_name}.jmodel"
-    if not path.exists():
-        pytest.skip(f"{path.name} not available")
-    probes = tmp_path / "probes.csv"
-    REFERENCE[REFERENCE.model == model_name].drop(columns="model").to_csv(
-        probes, index=False
-    )
-    check_probes(predict.load_spec(path), read_probes(probes))
+@pytest.mark.skipif(not LEGACY_PROBES, reason="legacy models not available")
+@pytest.mark.parametrize("probes", LEGACY_PROBES, ids=lambda p: p.name)
+def test_legacy_model_reproduces_probes(probes):
+    """The legacy models reproduce predictions made by jaqpotpy itself (see
+    scripts/make_jaqpotpy_probes.py) on TDC ADMET test molecules."""
+    model = probes.with_name(probes.name.removesuffix(".probes.csv") + ".jmodel")
+    check_probes(predict.load_spec(model), read_probes(probes))

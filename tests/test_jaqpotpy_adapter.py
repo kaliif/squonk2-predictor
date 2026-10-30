@@ -1,7 +1,6 @@
 import numpy as np
-import pandas as pd
 import pytest
-from conftest import MODELS_DIR, TEST_DATA_DIR, make_obj
+from conftest import make_obj
 from rdkit import Chem
 from sklearn import ensemble, linear_model, naive_bayes, neighbors, svm, tree
 
@@ -85,6 +84,35 @@ def test_maccs_model(fake_jaqpotpy, write_pickle):
     np.testing.assert_allclose(out["probability"], est.predict_proba(X))
     assert out["in_domain"].dtype == bool
     np.testing.assert_array_equal(spec.training_features, X)
+
+
+def test_input_dtype_follows_jaqpotpy(fake_jaqpotpy, write_pickle):
+    """jaqpotpy gives MACCS keys to the estimator as int8; with float input
+    nearest neighbour models break distance ties differently."""
+    X = _maccs_features()
+    est = neighbors.KNeighborsClassifier(n_neighbors=2).fit(X.astype(np.int8), Y_CLF)
+    spec = _adapt(write_pickle, _jmodel(fake_jaqpotpy, est))
+    assert spec.input_dtype is np.int8
+    seen = []
+    spec.estimator.predict = lambda X: seen.append(X.dtype) or np.zeros(len(X))
+    spec.predict(MOLS)
+    assert seen and set(seen) == {np.dtype(np.int8)}
+
+    desc = make_obj(
+        fake_jaqpotpy.TopologicalFingerprint,
+        radius=2,
+        size=1024,
+        chiral=False,
+        bonds=True,
+        features=False,
+        sparse=False,
+    )
+    X, _ = MorganFingerprint(2, 1024).compute(MOLS)
+    est = naive_bayes.BernoulliNB().fit(X, Y_CLF)
+    assert (
+        _adapt(write_pickle, _jmodel(fake_jaqpotpy, est, desc, 1024)).input_dtype
+        is np.float64
+    )
 
 
 def test_morgan_parameters(fake_jaqpotpy, write_pickle):
@@ -285,34 +313,3 @@ def test_weak_domain_warning(fake_jaqpotpy, write_pickle):
     )
     assert len(spec.warnings) == 1
     assert "domain check is weak" in spec.warnings[0]
-
-
-# --- the real legacy models, when present ------------------------------------
-
-REFERENCE = pd.read_csv(TEST_DATA_DIR / "jaqpotpy_reference.csv")
-
-
-@pytest.mark.skipif(not MODELS_DIR.is_dir(), reason="legacy models not available")
-@pytest.mark.parametrize("model_name", sorted(REFERENCE.model.unique(), key=str.lower))
-def test_legacy_model_matches_reference(model_name):
-    """Predictions match those computed independently (separate scratch
-    implementation and environment) for TDC ADMET test molecules."""
-    path = MODELS_DIR / f"{model_name}.jmodel"
-    if not path.exists():
-        pytest.skip(f"{path.name} not available")
-    spec = jaqpotpy_adapter.adapt(load_model_file(path).obj)
-    check_spec(spec)
-
-    ref = REFERENCE[REFERENCE.model == model_name]
-    X, ok = spec.features([Chem.MolFromSmiles(s) for s in ref.smiles])
-    assert ok.all()
-    out = spec.predict_features(X)
-    np.testing.assert_allclose(
-        out["prediction"].astype(float), ref.prediction, rtol=1e-6
-    )
-    if spec.output_kind == "probability":
-        np.testing.assert_allclose(
-            out["probability"][:, 1], ref.score, rtol=1e-6, atol=1e-9
-        )
-    elif spec.output_kind == "decision_function":
-        np.testing.assert_allclose(out["decision_function"], ref.score, rtol=1e-6)

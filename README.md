@@ -52,7 +52,18 @@ second (`--delimiter`, `--read-header`).
     poetry run pytest
 
 Tests against the legacy models run only when `models/` holds the `.jmodel`
-files, which aren't in the repository.
+files and their `.probes.csv` files, which aren't in the repository.
+
+# Probes for jaqpotpy models
+`scripts/make_jaqpotpy_probes.py` writes a probe file for a jaqpotpy model
+using jaqpotpy itself, so the probes record what the original software
+predicted. It runs in a separate environment that reproduces the one the
+models were trained in; its docstring says how to set that up.
+
+The job uses the original `mordred` 1.2.0 rather than `mordredcommunity`,
+because the latter perceives rings differently and changes ring counts and
+descriptors derived from them, which changed predictions of the legacy
+Mordred models for some molecules.
 
 # Setting up the environment
 The development environment requires [Poetry](https://python-poetry.org/docs/main#installing-with-pipx).

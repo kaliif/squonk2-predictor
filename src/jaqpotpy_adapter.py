@@ -82,16 +82,20 @@ def adapt(obj, name=None) -> ModelSpec:
         target_name = model_name
 
     domain, training_features = _leverage_domain(attrs.get("_doa"), len(feature_names))
+    featurizer = _featurizer(attrs.get("_descriptors"))
 
     return ModelSpec(
         name=model_name,
         source_format=f"jaqpotpy {version}",
         estimator=estimator,
-        featurizer=_featurizer(attrs.get("_descriptors")),
+        featurizer=featurizer,
         feature_names=feature_names,
         target_name=target_name,
         domain=domain,
         training_features=training_features,
+        # jaqpotpy gives MACCS keys to the estimator as int8, everything else
+        # as float64
+        input_dtype=np.int8 if isinstance(featurizer, MACCSKeys) else np.float64,
     )
 
 

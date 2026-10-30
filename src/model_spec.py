@@ -46,6 +46,10 @@ class ModelSpec:
     domain: LeverageDomain | None = None
     # feature matrix of the training set, when the format stores it
     training_features: np.ndarray | None = None
+    # dtype of the matrix the estimator is given; it can matter even when the
+    # values are the same, e.g. nearest neighbour searches break distance
+    # ties differently for integer and float input
+    input_dtype: type = np.float64
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -126,6 +130,7 @@ class ModelSpec:
 
     def predict_features(self, X: np.ndarray) -> dict[str, np.ndarray]:
         """Raw model outputs for a feature matrix with no failed rows."""
+        X = np.asarray(X, dtype=self.input_dtype)
         out = {"prediction": self.estimator.predict(X)}
         kind = self.output_kind
         if kind == "probability":

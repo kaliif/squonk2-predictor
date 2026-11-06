@@ -45,7 +45,9 @@ users choose in the Squonk UI. Each such version lives on its own branch and
 differs from `main` only in `pyproject.toml`, `poetry.lock`, the `Dockerfile`,
 `data-manager/jobs.yaml` and the job tests; the code and tests are shared and
 run on every supported version. Fixes go to `main` and are merged into the
-branches.
+branches. When a branch is cut, add its job version to `src/job_versions.py`
+on `main` and merge that into every branch, so that a job version refusing a
+model can name the version that reads it.
 
 | Branch        | Job version | Image tag | scikit-learn | Python |
 | ------------- | ----------- | --------- | ------------ | ------ |

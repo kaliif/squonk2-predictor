@@ -6,11 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 import sklearn
-from conftest import DATA_DIR, MODELS_DIR, make_obj
+import yaml
+from conftest import DATA_DIR, MODELS_DIR, ROOT, make_obj
 from rdkit import Chem
 from reference import ReferenceMismatch, check_reference, read_reference
 from sklearn import ensemble, linear_model, svm
 
+import job_versions
 import predict
 from featurizers import MACCSKeys
 from model_spec import UnsupportedModelError
@@ -222,15 +224,13 @@ def test_output_columns(tmp_path, fake_jaqpotpy, write_pickle, estimator, column
 
 # --- scikit-learn versions -------------------------------------------------
 
-# scikit-learn 1.3 changed the layout of tree nodes: trees pickled on one side
-# of the change can't be read on the other
-TREE_FORMAT_CHANGE = (1, 3)
 VERSION_MODELS = sorted((DATA_DIR / "models").glob("rf-maccs-sklearn-*.jmodel"))
 
 
 def _same_tree_format(version):
-    return (_version_tuple(version) >= TREE_FORMAT_CHANGE) == (
-        _version_tuple(sklearn.__version__) >= TREE_FORMAT_CHANGE
+    change = job_versions.TREE_FORMAT_CHANGE
+    return (_version_tuple(version) >= change) == (
+        _version_tuple(sklearn.__version__) >= change
     )
 
 
@@ -242,8 +242,21 @@ def test_models_from_other_scikit_learn_versions(tmp_path, model):
         _, counts = _run(tmp_path, model, SDF)
         assert counts["predicted"] == 10
     else:
-        with pytest.raises(ModelLoadError, match="incompatible dtype"):
+        with pytest.raises(ModelLoadError, match="use job version") as info:
             predict.load_spec(model)
+        hint = str(info.value)
+        assert f"running scikit-learn {sklearn.__version__}" in hint
+        # the hint names exactly the job versions that can read the model
+        for job, skl in job_versions.JOB_VERSIONS.items():
+            can_read = not _same_tree_format(skl)
+            assert (f"{job} (scikit-learn {skl})" in hint) == can_read
+
+
+def test_job_versions_match_job_definition():
+    """This branch's job version runs the scikit-learn it is listed with."""
+    jobs = yaml.safe_load((ROOT / "data-manager" / "jobs.yaml").read_text())
+    version = jobs["jobs"]["predict"]["version"]
+    assert job_versions.JOB_VERSIONS[version] == sklearn.__version__
 
 
 # --- reference predictions --------------------------------------------------
@@ -271,7 +284,7 @@ def _reference_spec(reference):
         return predict.load_spec(model)
     except ModelLoadError as exc:
         # the jaqpotpy models were pickled by scikit-learn 1.3.2
-        if "incompatible dtype" in str(exc) and not _same_tree_format("1.3.2"):
+        if "can't read" in str(exc) and not _same_tree_format("1.3.2"):
             pytest.skip(f"scikit-learn {sklearn.__version__} can't read its trees")
         raise
 

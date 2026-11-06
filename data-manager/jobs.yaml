@@ -8,14 +8,14 @@ collection: im-virtual-screening
 jobs:
 
   predict:
-    name: Predict with your model (scikit-learn 1.9)
+    name: Predict with your model (scikit-learn 1.2)
     description: >-
       Predicts values for molecules using a pre-trained scikit-learn model
       that you supply. The descriptors the model was trained on are
-      calculated for the molecules. This version runs scikit-learn 1.9.1.
-      It can't read tree models (e.g. random forests) saved with
-      scikit-learn before 1.3; use job version 1.0.1 for those.
-    version: '1.1.0'
+      calculated for the molecules. This version runs scikit-learn 1.2.2,
+      for tree models (e.g. random forests) saved with scikit-learn before
+      1.3. Use job version 1.1.0 for models from later versions.
+    version: '1.0.1'
     category: predictive models
     keywords:
     - predictive models
@@ -24,7 +24,7 @@ jobs:
     - jaqpot
     image:
       name: kaliif/squonk2-predictor
-      tag: latest
+      tag: '1.0.1'
       project-directory: /data
       working-directory: /data
       fix-permissions: true
@@ -145,19 +145,6 @@ jobs:
             checks:
             - exists: true
             - lineCount: 11
-      mordred:
-        inputs:
-          modelFile: data/models/dili-3trees.jmodel
-          inputFile: data/candidates-10.sdf
-        options:
-          outputFile: predictions.csv
-        checks:
-          exitCode: 0
-          outputs:
-          - name: predictions.csv
-            checks:
-            - exists: true
-            - lineCount: 11
       bare-estimator-rejected:
         inputs:
           modelFile: data/models/bare-estimator.pkl
@@ -170,9 +157,9 @@ jobs:
           - name: predictions.csv
             checks:
             - exists: false
-      sklearn-19-model:
+      sklearn-12-model:
         inputs:
-          modelFile: data/models/rf-maccs-sklearn-1.9.1.jmodel
+          modelFile: data/models/rf-maccs-sklearn-1.2.2.jmodel
           inputFile: data/candidates-10.sdf
         options:
           outputFile: predictions.csv
@@ -183,9 +170,9 @@ jobs:
             checks:
             - exists: true
             - lineCount: 11
-      sklearn-12-model-rejected:
+      sklearn-19-model-rejected:
         inputs:
-          modelFile: data/models/rf-maccs-sklearn-1.2.2.jmodel
+          modelFile: data/models/rf-maccs-sklearn-1.9.1.jmodel
           inputFile: data/10.smi
         options:
           outputFile: predictions.csv

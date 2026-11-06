@@ -9,16 +9,17 @@ authors = [
 readme = "README.md"
 
 [tool.poetry.dependencies]
-# Python, rdkit, numpy and mordred are held back by the legacy jaqpotpy
-# models: later rdkit releases change descriptors they were trained on,
-# rdkit 2023.9.6 has no wheels beyond Python 3.12 and is built against
-# numpy 1, and mordred 1.2.0 doesn't import with numpy 2.
-python = ">=3.12,<3.13"
+# This branch runs scikit-learn 1.2.2 for tree models saved before
+# scikit-learn 1.3, which later versions can't read; see "Job versions" in
+# README.md. scikit-learn 1.2.2 has no wheels beyond Python 3.11.
+# rdkit, numpy and mordred are held back as on main: later rdkit releases
+# change descriptors the legacy jaqpotpy models were trained on, rdkit
+# 2023.9.6 is built against numpy 1, and mordred 1.2.0 doesn't import with
+# numpy 2.
+python = ">=3.11,<3.12"
 rdkit = "2023.9.6"
 numpy = "^1.26.4"
-# trees pickled by scikit-learn < 1.4 are converted on loading, see
-# safe_loader.py
-scikit-learn = "1.9.1"
+scikit-learn = "1.2.2"
 pandas = "^2.3.3"
 # the original mordred, not mordredcommunity: jaqpotpy 1.0.x models were
 # trained with it, and mordredcommunity perceives rings differently, which

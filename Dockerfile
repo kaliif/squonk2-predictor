@@ -1,4 +1,4 @@
-FROM python:3.12.16-slim-trixie AS python-base
+FROM python:3.11.18-slim-trixie AS python-base
 
 ENV PYTHONUNBUFFERED=1
 ENV HOME=/code
@@ -25,7 +25,7 @@ FROM python-base AS final
 
 COPY --from=poetry-base /.venv /.venv
 
-ENV PYTHONPATH="${PYTHONPATH}:/.venv/lib/python3.12/site-packages/"
+ENV PYTHONPATH="${PYTHONPATH}:/.venv/lib/python3.11/site-packages/"
 ENV PATH=/.venv/bin:$PATH
 
 

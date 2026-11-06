@@ -6,11 +6,13 @@ import sys
 import joblib
 import numpy as np
 import pytest
+import sklearn
 from conftest import make_obj
 from sklearn import (
     compose,
     decomposition,
     ensemble,
+    exceptions,
     feature_selection,
     gaussian_process,
     impute,
@@ -23,12 +25,12 @@ from sklearn import (
     svm,
     tree,
 )
-from sklearn.exceptions import InconsistentVersionWarning
 
 from safe_loader import (
     ModelLoadError,
     Stub,
     UnsafeModelError,
+    _version_tuple,
     load_model_file,
     stub_name,
 )
@@ -319,6 +321,10 @@ def _as_sklearn_1_3(estimators, monkeypatch):
     return data
 
 
+@pytest.mark.skipif(
+    _version_tuple(sklearn.__version__) < (1, 4),
+    reason="the tree format changed in scikit-learn 1.4",
+)
 def test_old_classifier_trees_are_converted(tmp_path, monkeypatch):
     rng = np.random.default_rng(0)
     X, y = rng.random((60, 4)), rng.integers(0, 3, 60)
@@ -332,7 +338,7 @@ def test_old_classifier_trees_are_converted(tmp_path, monkeypatch):
         _as_sklearn_1_3([forest, *forest.estimators_, regressor], monkeypatch)
     )
     # unconverted, the counts give wrong probabilities
-    with pytest.warns(InconsistentVersionWarning):
+    with pytest.warns(exceptions.InconsistentVersionWarning):
         plain = pickle.loads(path.read_bytes())[0]
     assert not np.allclose(plain.predict_proba(X), expected[0])
 

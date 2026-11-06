@@ -38,6 +38,30 @@ multiclass models), `<target>_leverage` and `<target>_in_domain` for models
 with an applicability domain, and `error` for molecules that couldn't be
 predicted.
 
+# Job versions
+One container holds one set of library versions, so models saved with an
+incompatible scikit-learn version need another version of the job, which
+users choose in the Squonk UI. Each such version lives on its own branch and
+differs from `main` only in `pyproject.toml`, `poetry.lock`, the `Dockerfile`,
+`data-manager/jobs.yaml` and the job tests; the code and tests are shared and
+run on every supported version. Fixes go to `main` and are merged into the
+branches.
+
+| Branch        | Job version | Image tag | scikit-learn | Python |
+| ------------- | ----------- | --------- | ------------ | ------ |
+| `main`        | 1.1.0       | `latest`  | 1.9.1        | 3.12   |
+| `sklearn-1.2` | 1.0.1       | `1.0.1`   | 1.2.2        | 3.11   |
+
+scikit-learn 1.3 changed the format of tree models, so trees saved before
+1.3 load only on `sklearn-1.2`, and trees saved with 1.3 or later only on
+`main`. The `data/models/rf-maccs-sklearn-*.jmodel` test models show this;
+`scripts/make_version_test_model.py` makes one with the scikit-learn version
+that runs it.
+
+To load both versions into Squonk, load the manifest
+`data-manager/manifest.yaml` from each branch, and build and push each
+branch's image under the tag its `jobs.yaml` names.
+
 # Running locally
 
     poetry run python src/predict.py --model models/caco2_wang.jmodel \

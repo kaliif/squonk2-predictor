@@ -172,7 +172,7 @@ def _version_tuple(version: str) -> tuple[int, int]:
 def _upgrade_estimator_state(estimator, state: dict, version: str) -> int:
     """Update the pickled state of an estimator from an older scikit-learn to
     what this version expects, in place. Returns the number of trees whose
-    data was converted.
+    data was converted. Only needed when running scikit-learn >= 1.4.
 
     scikit-learn doesn't support unpickling estimators across versions, and
     for trees from before 1.4 it silently gives wrong results: classifier trees
@@ -181,11 +181,16 @@ def _upgrade_estimator_state(estimator, state: dict, version: str) -> int:
     before 1.4 also lack monotonic_cst, which 1.4 to 1.8 can't predict without.
     """
     # pylint: disable=import-outside-toplevel
+    import sklearn
     from sklearn.base import ClassifierMixin
     from sklearn.tree import BaseDecisionTree
     from sklearn.tree._tree import Tree  # pylint: disable=no-name-in-module
 
-    if _version_tuple(version) >= (1, 4) or not isinstance(estimator, BaseDecisionTree):
+    if (
+        _version_tuple(version) >= (1, 4)
+        or _version_tuple(sklearn.__version__) < (1, 4)
+        or not isinstance(estimator, BaseDecisionTree)
+    ):
         return 0
     state.setdefault("monotonic_cst", None)
     tree = state.get("tree_")
@@ -378,11 +383,20 @@ def _open_model_file(path):
         yield f
 
 
+def _is_version_warning(w) -> bool:
+    """scikit-learn's warning that an estimator was pickled by another
+    version: InconsistentVersionWarning since 1.3, a UserWarning before."""
+    # pylint: disable-next=import-outside-toplevel
+    from sklearn import exceptions
+
+    category = getattr(exceptions, "InconsistentVersionWarning", None)
+    if category is not None and issubclass(w.category, category):
+        return True
+    return str(w.message).startswith("Trying to unpickle estimator")
+
+
 def load_model_file(path) -> LoadResult:
     """Load a pickle or joblib model file through the allowlist."""
-    # pylint: disable=import-outside-toplevel
-    from sklearn.exceptions import InconsistentVersionWarning
-
     rejected: set[str] = set()
     with _open_model_file(path) as fobj:
         with warnings.catch_warnings(record=True) as caught:
@@ -403,11 +417,7 @@ def load_model_file(path) -> LoadResult:
         raise UnsafeModelError(rejected)
     # version mismatches are reported from sklearn_versions instead of
     # scikit-learn's warning for every estimator class
-    messages = [
-        str(w.message)
-        for w in caught
-        if not issubclass(w.category, InconsistentVersionWarning)
-    ]
+    messages = [str(w.message) for w in caught if not _is_version_warning(w)]
     if unpickler.converted_trees:
         messages.append(
             f"converted {unpickler.converted_trees} classifier trees from the "

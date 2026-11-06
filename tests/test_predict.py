@@ -5,6 +5,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn
 from conftest import DATA_DIR, MODELS_DIR, make_obj
 from rdkit import Chem
 from reference import ReferenceMismatch, check_reference, read_reference
@@ -13,7 +14,7 @@ from sklearn import ensemble, linear_model, svm
 import predict
 from featurizers import MACCSKeys
 from model_spec import UnsupportedModelError
-from safe_loader import UnsafeModelError
+from safe_loader import ModelLoadError, UnsafeModelError, _version_tuple
 
 SMILES = [
     "CCO",
@@ -164,7 +165,14 @@ def test_batches_give_same_output(tmp_path, classifier_file, monkeypatch):
     whole, _ = _run(tmp_path, classifier_file, SDF)
     monkeypatch.setattr(predict, "BATCH_SIZE", 3)
     batched, _ = _run(tmp_path, classifier_file, SDF)
-    pd.testing.assert_frame_equal(whole, batched)
+    # the last digit of a probability can depend on the batch size
+    probability = "activity_probability"
+    pd.testing.assert_frame_equal(
+        whole.drop(columns=probability), batched.drop(columns=probability)
+    )
+    np.testing.assert_allclose(
+        whole[probability].astype(float), batched[probability].astype(float)
+    )
 
 
 def test_all_molecules_failing(tmp_path, classifier_file):
@@ -212,6 +220,32 @@ def test_output_columns(tmp_path, fake_jaqpotpy, write_pickle, estimator, column
     ]
 
 
+# --- scikit-learn versions -------------------------------------------------
+
+# scikit-learn 1.3 changed the layout of tree nodes: trees pickled on one side
+# of the change can't be read on the other
+TREE_FORMAT_CHANGE = (1, 3)
+VERSION_MODELS = sorted((DATA_DIR / "models").glob("rf-maccs-sklearn-*.jmodel"))
+
+
+def _same_tree_format(version):
+    return (_version_tuple(version) >= TREE_FORMAT_CHANGE) == (
+        _version_tuple(sklearn.__version__) >= TREE_FORMAT_CHANGE
+    )
+
+
+@pytest.mark.parametrize("model", VERSION_MODELS, ids=lambda p: p.name)
+def test_models_from_other_scikit_learn_versions(tmp_path, model):
+    """Models made by scripts/make_version_test_model.py with each version."""
+    version = model.name.removeprefix("rf-maccs-sklearn-").removesuffix(".jmodel")
+    if _same_tree_format(version):
+        _, counts = _run(tmp_path, model, SDF)
+        assert counts["predicted"] == 10
+    else:
+        with pytest.raises(ModelLoadError, match="incompatible dtype"):
+            predict.load_spec(model)
+
+
 # --- reference predictions --------------------------------------------------
 
 
@@ -229,10 +263,17 @@ REFERENCES = sorted(
 )
 
 
-def _reference_model(reference):
-    return reference.with_name(
+def _reference_spec(reference):
+    model = reference.with_name(
         reference.name.removesuffix(".reference.csv") + ".jmodel"
     )
+    try:
+        return predict.load_spec(model)
+    except ModelLoadError as exc:
+        # the jaqpotpy models were pickled by scikit-learn 1.3.2
+        if "incompatible dtype" in str(exc) and not _same_tree_format("1.3.2"):
+            pytest.skip(f"scikit-learn {sklearn.__version__} can't read its trees")
+        raise
 
 
 @pytest.mark.parametrize(
@@ -242,14 +283,12 @@ def test_model_reproduces_reference(reference):
     """The models reproduce predictions made by jaqpotpy itself (see
     scripts/make_reference_predictions.py) on TDC ADMET test molecules. Those
     in models/ are the legacy models, which aren't in the repository."""
-    check_reference(
-        predict.load_spec(_reference_model(reference)), read_reference(reference)
-    )
+    check_reference(_reference_spec(reference), read_reference(reference))
 
 
 def test_reference_mismatch_is_detected():
     path = DATA_DIR / "models" / "CYP2D6_Veith.reference.csv"
-    spec = predict.load_spec(_reference_model(path))
+    spec = _reference_spec(path)
     reference = read_reference(path)
     reference.loc[0, "prediction"] = 1 - reference.loc[0, "prediction"]
     with pytest.raises(ReferenceMismatch, match="1 reference values"):

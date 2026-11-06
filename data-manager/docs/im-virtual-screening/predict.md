@@ -35,10 +35,20 @@ Models with external features or preprocessing steps are not supported. A
 file holding only a scikit-learn estimator is rejected, because nothing in it
 records which descriptors the estimator was trained on.
 
-The job runs scikit-learn 1.9.1, RDKit 2023.09.6 and mordred 1.2.0. A model
-trained with another scikit-learn version is reported in the job's events,
-and rejected if it can't run. Decision trees saved by scikit-learn before 1.4
-are converted to the current format.
+Each version of the job runs one set of library versions. Choose the job
+version that matches the scikit-learn version your model was saved with:
+
+| Job version | scikit-learn | Python | Reads tree models saved with |
+| ----------- | ------------ | ------ | ---------------------------- |
+| 1.1.0       | 1.9.1        | 3.12   | scikit-learn 1.3 or later    |
+| 1.0.1       | 1.2.2        | 3.11   | scikit-learn before 1.3      |
+
+Both run RDKit 2023.09.6 and mordred 1.2.0. Tree models are decision trees,
+random forests, extra trees and gradient boosting. Other models usually load
+in either version. A model saved with a different scikit-learn version than
+the job's is reported in the job's events, and rejected if it can't be read.
+Decision trees saved by scikit-learn before 1.4 are converted to the format
+of later versions.
 
 ## Implementation details
 

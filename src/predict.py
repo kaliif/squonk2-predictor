@@ -33,6 +33,7 @@ from rdkit import Chem, RDLogger
 from sklearn.base import BaseEstimator
 
 import jaqpotpy_adapter
+import job_versions
 from model_spec import ModelSpec, UnsupportedModelError, check_spec
 from safe_loader import ModelLoadError, UnsafeModelError, load_model_file, stub_name
 
@@ -54,7 +55,13 @@ def _fatal(msg):
 
 def load_spec(path) -> ModelSpec:
     """Load and check a model file, or raise saying why it can't be used."""
-    result = load_model_file(path)
+    try:
+        result = load_model_file(path)
+    except ModelLoadError as exc:
+        # scikit-learn's message lists the record types of tree nodes
+        if "node array from the pickle has an incompatible dtype" in str(exc):
+            raise ModelLoadError(job_versions.tree_format_message()) from exc
+        raise
     obj = result.obj
     if jaqpotpy_adapter.is_jaqpotpy_model(obj):
         spec = jaqpotpy_adapter.adapt(obj, name=Path(path).stem)

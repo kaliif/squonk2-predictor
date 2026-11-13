@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "featurizer": {
+    "name": "maccs",
+    "params": {}
+  },
+  "columns": [
+    "FP"
+  ],
+  "id_column": "id",
+  "smiles_column": "smiles",
+  "fragment_method": "none",
+  "library_versions": {
+    "rdkit": "2023.09.6"
+  },
+  "missing_value": 0
+}

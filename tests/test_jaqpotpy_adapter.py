@@ -1,7 +1,14 @@
+"""Tests for the jaqpotpy adapter: building a ModelSpec from a .jmodel stub.
+
+Descriptors are no longer calculated in the job, so these check the adapter
+reads the featurizer identity, its parameters, the feature list, the input
+dtype, the applicability domain and the target correctly, and that check_spec
+applies its model-level checks. Actual descriptor values are the descriptor
+jobs' concern (see test_descriptor_input)."""
+
 import numpy as np
 import pytest
 from conftest import make_obj
-from rdkit import Chem
 from sklearn import ensemble, linear_model, naive_bayes, neighbors, svm, tree
 
 import jaqpotpy_adapter
@@ -14,22 +21,18 @@ from featurizers import (
 from model_spec import UnsupportedModelError, check_spec
 from safe_loader import load_model_file
 
-SMILES = [
-    "CCO",
-    "c1ccccc1C(=O)O",
-    "CC(C)NCC(O)COc1ccc(NC=O)cc1",
-    "CCN(CC)CC",
-    "OC1CCCCC1",
-    "c1ccncc1",
-]
-MOLS = [Chem.MolFromSmiles(s) for s in SMILES]
+N = 6
 Y_CLF = np.array([0, 1, 1, 0, 0, 1])
-Y_REG = np.arange(len(SMILES), dtype=float)
+Y_REG = np.arange(N, dtype=float)
+_RNG = np.random.default_rng(0)
 
 
-def _maccs_features():
-    X, _ = MACCSKeys().compute(MOLS)
-    return X
+def _features(n_features, binary=True):
+    """An arbitrary feature matrix to fit estimators on; the values don't
+    matter now that the job doesn't compute descriptors."""
+    if binary:
+        return _RNG.integers(0, 2, size=(N, n_features)).astype(float)
+    return _RNG.random((N, n_features))
 
 
 def _jmodel(
@@ -67,19 +70,18 @@ def _adapt(write_pickle, model):
 
 
 def test_maccs_model(fake_jaqpotpy, write_pickle):
-    X = _maccs_features()
+    X = _features(167)
     est = linear_model.LogisticRegression().fit(X, Y_CLF)
     spec = _adapt(
         write_pickle, _jmodel(fake_jaqpotpy, est, _doa=_leverage(fake_jaqpotpy, X))
     )
 
     assert isinstance(spec.featurizer, MACCSKeys)
+    assert spec.featurizer.name == "maccs" and spec.featurizer.binary
     assert spec.featurizer.missing_value == 0.0
     assert spec.name == spec.target_name == "test_model"
     assert spec.output_kind == "probability"
-    features, ok = spec.features(MOLS)
-    assert ok.all()
-    out = spec.predict_features(features)
+    out = spec.predict_features(X)
     np.testing.assert_array_equal(out["prediction"], est.predict(X))
     np.testing.assert_allclose(out["probability"], est.predict_proba(X))
     assert out["in_domain"].dtype == bool
@@ -89,13 +91,13 @@ def test_maccs_model(fake_jaqpotpy, write_pickle):
 def test_input_dtype_follows_jaqpotpy(fake_jaqpotpy, write_pickle):
     """jaqpotpy gives MACCS keys to the estimator as int8; with float input
     nearest neighbour models break distance ties differently."""
-    X = _maccs_features()
+    X = _features(167)
     est = neighbors.KNeighborsClassifier(n_neighbors=2).fit(X.astype(np.int8), Y_CLF)
     spec = _adapt(write_pickle, _jmodel(fake_jaqpotpy, est))
     assert spec.input_dtype is np.int8
     seen = []
     spec.estimator.predict = lambda X: seen.append(X.dtype) or np.zeros(len(X))
-    spec.predict(MOLS)
+    spec.predict_features(X)
     assert seen and set(seen) == {np.dtype(np.int8)}
 
     desc = make_obj(
@@ -107,8 +109,7 @@ def test_input_dtype_follows_jaqpotpy(fake_jaqpotpy, write_pickle):
         features=False,
         sparse=False,
     )
-    X, _ = MorganFingerprint(2, 1024).compute(MOLS)
-    est = naive_bayes.BernoulliNB().fit(X, Y_CLF)
+    est = naive_bayes.BernoulliNB().fit(_features(1024), Y_CLF)
     assert (
         _adapt(write_pickle, _jmodel(fake_jaqpotpy, est, desc, 1024)).input_dtype
         is np.float64
@@ -126,9 +127,10 @@ def test_morgan_parameters(fake_jaqpotpy, write_pickle):
         sparse=False,
         smiles=False,
     )
-    X, _ = MorganFingerprint(3, 1024, True, False, True).compute(MOLS)
+    X = _features(1024)
     est = naive_bayes.BernoulliNB().fit(X, Y_CLF)
     spec = _adapt(write_pickle, _jmodel(fake_jaqpotpy, est, desc, 1024))
+    assert isinstance(spec.featurizer, MorganFingerprint)
     assert spec.featurizer.params() == {
         "radius": 3,
         "n_bits": 1024,
@@ -136,36 +138,38 @@ def test_morgan_parameters(fake_jaqpotpy, write_pickle):
         "bond_types": False,
         "feature_invariants": True,
     }
+    assert spec.featurizer.feature_names == [f"f{i}" for i in range(1024)]
     np.testing.assert_array_equal(
-        spec.predict_features(spec.features(MOLS)[0])["prediction"], est.predict(X)
+        spec.predict_features(X)["prediction"], est.predict(X)
     )
 
 
-def test_rdkit_descriptors_by_name(fake_jaqpotpy, write_pickle):
-    # jaqpotpy stores RDKitDescriptors by name; features are selected by name
-    fz = RDKitDescriptors()
-    names = [n for n in fz.feature_names if n not in ("SPS", "AvgIpc")][::-1]
-    full, _ = fz.compute(MOLS)
-    X = full[:, [fz.feature_names.index(n) for n in names]]
+def test_rdkit_descriptors(fake_jaqpotpy, write_pickle):
+    # jaqpotpy stores RDKitDescriptors by name; the model's own feature list is
+    # kept, and columns are later selected by name from a descriptor file
+    names = ["MolWt", "TPSA", "NumHDonors", "NumHAcceptors"]
+    X = _features(len(names), binary=False)
     est = tree.DecisionTreeRegressor(random_state=0).fit(X, Y_REG)
     spec = _adapt(
         write_pickle, _jmodel(fake_jaqpotpy, est, "RDKitDescriptors", _X=names)
     )
+    assert isinstance(spec.featurizer, RDKitDescriptors)
+    assert spec.featurizer.params() == {"use_fragment": True, "ipc_avg": True}
+    assert spec.feature_names == names
     np.testing.assert_array_equal(
-        spec.predict_features(spec.features(MOLS)[0])["prediction"], est.predict(X)
+        spec.predict_features(X)["prediction"], est.predict(X)
     )
 
 
 def test_mordred_model(fake_jaqpotpy, write_pickle):
-    fz = MordredDescriptors(missing_value=0.0)
-    X, _ = fz.compute(MOLS)
+    names = [f"mordred_{i}" for i in range(10)]
+    X = _features(len(names), binary=False)
     est = ensemble.RandomForestRegressor(5, random_state=0).fit(X, Y_REG)
     desc = make_obj(fake_jaqpotpy.MordredDescriptors, ignore_3D=True)
-    spec = _adapt(write_pickle, _jmodel(fake_jaqpotpy, est, desc, _X=fz.feature_names))
+    spec = _adapt(write_pickle, _jmodel(fake_jaqpotpy, est, desc, _X=names))
     assert isinstance(spec.featurizer, MordredDescriptors)
-    np.testing.assert_array_equal(
-        spec.predict_features(spec.features(MOLS)[0])["prediction"], est.predict(X)
-    )
+    assert spec.featurizer.params() == {"ignore_3D": True}
+    assert spec.feature_names == names
 
 
 @pytest.mark.parametrize(
@@ -182,7 +186,7 @@ def test_mordred_model(fake_jaqpotpy, write_pickle):
     ],
 )
 def test_rejections(fake_jaqpotpy, write_pickle, overrides, message):
-    est = naive_bayes.BernoulliNB().fit(_maccs_features(), Y_CLF)
+    est = naive_bayes.BernoulliNB().fit(_features(167), Y_CLF)
     path = write_pickle(_jmodel(fake_jaqpotpy, est, **overrides))
     with pytest.raises(UnsupportedModelError, match=message):
         jaqpotpy_adapter.adapt(load_model_file(path).obj)
@@ -220,14 +224,14 @@ def test_rejections(fake_jaqpotpy, write_pickle, overrides, message):
     ],
 )
 def test_featurizer_rejections(fake_jaqpotpy, write_pickle, make_desc, message):
-    est = naive_bayes.BernoulliNB().fit(_maccs_features(), Y_CLF)
+    est = naive_bayes.BernoulliNB().fit(_features(167), Y_CLF)
     path = write_pickle(_jmodel(fake_jaqpotpy, est, make_desc(fake_jaqpotpy)))
     with pytest.raises(UnsupportedModelError, match=message):
         jaqpotpy_adapter.adapt(load_model_file(path).obj)
 
 
 def test_domain_rejections(fake_jaqpotpy, write_pickle):
-    X = _maccs_features()
+    X = _features(167)
     est = naive_bayes.BernoulliNB().fit(X, Y_CLF)
     for doa, message in [
         (make_obj(fake_jaqpotpy.MeanVar), "unsupported applicability domain"),
@@ -241,18 +245,8 @@ def test_domain_rejections(fake_jaqpotpy, write_pickle):
             jaqpotpy_adapter.adapt(load_model_file(path).obj)
 
 
-def test_check_rejects_unknown_feature_names(fake_jaqpotpy, write_pickle):
-    est = tree.DecisionTreeRegressor().fit(np.zeros((2, 2)), [0, 1])
-    model = _jmodel(
-        fake_jaqpotpy, est, "RDKitDescriptors", _X=["MolWt", "NotADescriptor"]
-    )
-    spec = jaqpotpy_adapter.adapt(load_model_file(write_pickle(model)).obj)
-    with pytest.raises(UnsupportedModelError, match="NotADescriptor"):
-        check_spec(spec)
-
-
 def test_check_rejects_feature_count_mismatch(fake_jaqpotpy, write_pickle):
-    est = naive_bayes.BernoulliNB().fit(_maccs_features()[:, :100], Y_CLF)
+    est = naive_bayes.BernoulliNB().fit(_features(167)[:, :100], Y_CLF)
     spec = jaqpotpy_adapter.adapt(
         load_model_file(write_pickle(_jmodel(fake_jaqpotpy, est))).obj
     )
@@ -261,7 +255,7 @@ def test_check_rejects_feature_count_mismatch(fake_jaqpotpy, write_pickle):
 
 
 def test_check_rejects_estimator_that_cannot_run(fake_jaqpotpy, write_pickle):
-    est = linear_model.LogisticRegression().fit(_maccs_features(), Y_CLF)
+    est = linear_model.LogisticRegression().fit(_features(167), Y_CLF)
     del est.coef_
     spec = jaqpotpy_adapter.adapt(
         load_model_file(write_pickle(_jmodel(fake_jaqpotpy, est))).obj
@@ -297,7 +291,7 @@ def test_check_rejects_estimator_that_cannot_run(fake_jaqpotpy, write_pickle):
     ],
 )
 def test_warnings(fake_jaqpotpy, write_pickle, estimator, y, expected):
-    est = estimator.fit(_maccs_features(), y)
+    est = estimator.fit(_features(167), y)
     spec = _adapt(write_pickle, _jmodel(fake_jaqpotpy, est))
     assert len(spec.warnings) == len(expected)
     for text in expected:
@@ -306,7 +300,7 @@ def test_warnings(fake_jaqpotpy, write_pickle, estimator, y, expected):
 
 def test_weak_domain_warning(fake_jaqpotpy, write_pickle):
     # 6 molecules and 167 features: threshold far above 1
-    X = _maccs_features()
+    X = _features(167)
     est = linear_model.Ridge().fit(X, Y_REG)
     spec = _adapt(
         write_pickle, _jmodel(fake_jaqpotpy, est, _doa=_leverage(fake_jaqpotpy, X))

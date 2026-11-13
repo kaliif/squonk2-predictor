@@ -9,24 +9,16 @@ authors = [
 readme = "README.md"
 
 [tool.poetry.dependencies]
-# Python, rdkit, numpy and mordred are held back by the legacy jaqpotpy
-# models: later rdkit releases change descriptors they were trained on,
-# rdkit 2023.9.6 has no wheels beyond Python 3.12 and is built against
-# numpy 1, and mordred 1.2.0 doesn't import with numpy 2.
 python = ">=3.12,<3.13"
+# the job no longer computes descriptors, so rdkit is only used to read SDF
+# descriptor files; its version no longer affects results and these pins
+# (rdkit 2023.9.6 has no wheels beyond Python 3.12) can be relaxed later
 rdkit = "2023.9.6"
 numpy = "^1.26.4"
 # trees pickled by scikit-learn < 1.4 are converted on loading, see
 # safe_loader.py
 scikit-learn = "1.9.1"
 pandas = "^2.3.3"
-# the original mordred, not mordredcommunity: jaqpotpy 1.0.x models were
-# trained with it, and mordredcommunity perceives rings differently, which
-# changes ring counts and descriptors derived from them
-mordred = "1.2.0"
-# mordred 1.2.0 imports distutils, which Python 3.12 provides only through
-# setuptools
-setuptools = "*"
 im-data-manager-job-utilities = "^1.4.1"
 
 [tool.poetry.group.dev.dependencies]
@@ -43,9 +35,3 @@ pytest = "^9.2.0"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
-[tool.pytest.ini_options]
-filterwarnings = [
-    # mordred 1.2.0 is old; its deprecation warnings are noise
-    "ignore::DeprecationWarning:mordred.*",
-]

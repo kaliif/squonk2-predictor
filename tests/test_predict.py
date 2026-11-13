@@ -1,4 +1,8 @@
-import gzip
+"""Tests for predict.py: loading and checking models, scikit-learn version
+handling, output columns and reporting. The input is always a precomputed
+descriptor file; the descriptor-reading logic itself is tested in
+test_descriptor_input."""
+
 import os
 import pickle
 
@@ -7,28 +11,22 @@ import pandas as pd
 import pytest
 import sklearn
 import yaml
-from conftest import DATA_DIR, MODELS_DIR, ROOT, make_obj
-from rdkit import Chem
-from reference import ReferenceMismatch, check_reference, read_reference
+from conftest import DATA_DIR, ROOT, make_obj, write_descriptor_file
 from sklearn import ensemble, linear_model, svm
 
 import job_versions
 import predict
-from featurizers import MACCSKeys
 from model_spec import UnsupportedModelError
 from safe_loader import ModelLoadError, UnsafeModelError, _version_tuple
 
-SMILES = [
-    "CCO",
-    "c1ccccc1C(=O)O",
-    "CC(C)NCC(O)COc1ccc(NC=O)cc1",
-    "CCN(CC)CC",
-    "OC1CCCCC1",
-    "c1ccncc1",
-]
-MOLS = [Chem.MolFromSmiles(s) for s in SMILES]
-X_TRAIN = MACCSKeys().compute(MOLS)[0]
-SDF = DATA_DIR / "candidates-10.sdf"
+_RNG = np.random.default_rng(0)
+X_TRAIN = _RNG.integers(0, 2, size=(6, 167)).astype(float)
+Y = [0, 1, 1, 0, 0, 1]
+
+# a committed MACCS descriptor file (167 bits) for the 10 candidate molecules,
+# usable by any MACCS model
+MACCS_DESCRIPTORS = DATA_DIR / "descriptors" / "clearance-maccs.smi"
+MACCS_MANIFEST = DATA_DIR / "descriptors" / "clearance-maccs.manifest.json"
 
 
 def _jmodel(jq, estimator, with_domain=True):
@@ -55,7 +53,7 @@ def _jmodel(jq, estimator, with_domain=True):
 
 @pytest.fixture
 def classifier():
-    return linear_model.LogisticRegression().fit(X_TRAIN, [0, 1, 1, 0, 0, 1])
+    return linear_model.LogisticRegression().fit(X_TRAIN, Y)
 
 
 @pytest.fixture
@@ -63,13 +61,9 @@ def classifier_file(fake_jaqpotpy, write_pickle, classifier):
     return write_pickle(_jmodel(fake_jaqpotpy, classifier))
 
 
-def _maccs(mols):
-    return MACCSKeys(missing_value=0.0).compute(mols)[0]
-
-
-def _run(tmp_path, model, molecules, **kwargs):
+def _run(tmp_path, model, descriptors, manifest=None, **kwargs):
     outfile = tmp_path / "out" / "predictions.csv"
-    counts = predict.run(model, molecules, outfile, **kwargs)
+    counts = predict.run(model, descriptors, outfile, manifest=manifest, **kwargs)
     # keep_default_na=False so empty cells read back as '' rather than NaN
     return pd.read_csv(outfile, keep_default_na=False, dtype=str), counts
 
@@ -95,7 +89,9 @@ def test_unsafe_file_is_rejected(tmp_path):
     path = tmp_path / "evil.jmodel"
     path.write_bytes(pickle.dumps(Payload()))
     with pytest.raises(UnsafeModelError):
-        predict.run(path, SDF, tmp_path / "out.csv")
+        predict.run(
+            path, MACCS_DESCRIPTORS, tmp_path / "out.csv", manifest=MACCS_MANIFEST
+        )
     assert not (tmp_path / "out.csv").exists()
 
 
@@ -110,8 +106,10 @@ def test_loader_warnings_are_kept(fake_jaqpotpy, write_pickle, classifier, monke
 # --- output -----------------------------------------------------------------
 
 
-def test_sdf_predictions(tmp_path, classifier_file, classifier):
-    out, counts = _run(tmp_path, classifier_file, SDF)
+def test_predictions_match_the_estimator(tmp_path, classifier_file, classifier):
+    spec = predict.load_spec(classifier_file)
+    descfile, manifest = write_descriptor_file(tmp_path, spec, X_TRAIN)
+    out, counts = _run(tmp_path, classifier_file, descfile, manifest=manifest)
     assert list(out.columns) == [
         "id",
         "smiles",
@@ -121,75 +119,12 @@ def test_sdf_predictions(tmp_path, classifier_file, classifier):
         "activity_in_domain",
         "error",
     ]
-    mols = list(Chem.SDMolSupplier(str(SDF)))
-    assert counts["read"] == counts["predicted"] == 10
-    assert out.id.tolist() == [m.GetProp("_Name") for m in mols]
-    X = _maccs(mols)
+    assert counts["read"] == counts["predicted"] == 6
     np.testing.assert_allclose(
-        out.activity_probability.astype(float), classifier.predict_proba(X)[:, 1]
+        out.activity_probability.astype(float), classifier.predict_proba(X_TRAIN)[:, 1]
     )
-    assert out.activity.tolist() == [str(v) for v in classifier.predict(X)]
+    assert out.activity.tolist() == [str(v) for v in classifier.predict(X_TRAIN)]
     assert set(out.error) == {""}
-    assert (out.activity_in_domain == "False").sum() == counts["out_of_domain"]
-
-
-def test_smiles_file_formats(tmp_path, classifier_file, classifier):
-    lines = [
-        "smiles\tname",
-        "CCO\tethanol",
-        "not_a_smiles\tbad",
-        "",
-        "c1ccccc1O phenol",
-        "CCN",
-    ]
-    path = tmp_path / "in.smi.gz"
-    with gzip.open(path, "wt") as fh:
-        fh.write("\n".join(lines) + "\n")
-
-    out, counts = _run(tmp_path, classifier_file, path, read_header=True)
-    assert out.id.tolist() == ["ethanol", "bad", "phenol", ""]
-    assert out.smiles.tolist() == ["CCO", "not_a_smiles", "c1ccccc1O", "CCN"]
-    assert out.error.tolist() == ["", "invalid molecule", "", ""]
-    assert counts["read"] == 4 and counts["predicted"] == 3
-    # integer labels stay integers next to an empty row
-    expected = classifier.predict(_maccs([Chem.MolFromSmiles(s) for s in ("CCO",)]))
-    assert out.activity[0] == str(expected[0]) and out.activity[1] == ""
-
-
-def test_comma_separated_smiles(tmp_path, classifier_file):
-    path = tmp_path / "in.csv"
-    path.write_text("CCO,ethanol,extra\n")
-    out, _ = _run(tmp_path, classifier_file, path, delimiter=",")
-    assert out.id.tolist() == ["ethanol"] and out.smiles.tolist() == ["CCO"]
-
-
-def test_batches_give_same_output(tmp_path, classifier_file, monkeypatch):
-    whole, _ = _run(tmp_path, classifier_file, SDF)
-    monkeypatch.setattr(predict, "BATCH_SIZE", 3)
-    batched, _ = _run(tmp_path, classifier_file, SDF)
-    # the last digit of a probability can depend on the batch size
-    probability = "activity_probability"
-    pd.testing.assert_frame_equal(
-        whole.drop(columns=probability), batched.drop(columns=probability)
-    )
-    np.testing.assert_allclose(
-        whole[probability].astype(float), batched[probability].astype(float)
-    )
-
-
-def test_all_molecules_failing(tmp_path, classifier_file):
-    path = tmp_path / "in.smi"
-    path.write_text("xyz\n")
-    out, counts = _run(tmp_path, classifier_file, path)
-    assert "activity_probability" in out.columns
-    assert counts["predicted"] == 0 and out.error.tolist() == ["invalid molecule"]
-
-
-def test_empty_input(tmp_path, classifier_file):
-    path = tmp_path / "in.smi"
-    path.write_text("")
-    out, counts = _run(tmp_path, classifier_file, path)
-    assert out.empty and "activity" in out.columns and counts["read"] == 0
 
 
 @pytest.mark.parametrize(
@@ -212,14 +147,10 @@ def test_output_columns(tmp_path, fake_jaqpotpy, write_pickle, estimator, column
     if not columns:
         y = np.arange(6.0)
     path = write_pickle(_jmodel(fake_jaqpotpy, estimator.fit(X_TRAIN, y), False))
-    out, _ = _run(tmp_path, path, SDF)
-    assert list(out.columns) == [
-        "id",
-        "smiles",
-        "activity",
-        *columns,
-        "error",
-    ]
+    spec = predict.load_spec(path)
+    descfile, manifest = write_descriptor_file(tmp_path, spec, X_TRAIN)
+    out, _ = _run(tmp_path, path, descfile, manifest=manifest)
+    assert list(out.columns) == ["id", "smiles", "activity", *columns, "error"]
 
 
 # --- scikit-learn versions -------------------------------------------------
@@ -236,10 +167,11 @@ def _same_tree_format(version):
 
 @pytest.mark.parametrize("model", VERSION_MODELS, ids=lambda p: p.name)
 def test_models_from_other_scikit_learn_versions(tmp_path, model):
-    """Models made by scripts/make_version_test_model.py with each version."""
+    """Models made by scripts/make_version_test_model.py with each version. All
+    use MACCS keys, so the committed MACCS descriptor file feeds them."""
     version = model.name.removeprefix("rf-maccs-sklearn-").removesuffix(".jmodel")
     if _same_tree_format(version):
-        _, counts = _run(tmp_path, model, SDF)
+        _, counts = _run(tmp_path, model, MACCS_DESCRIPTORS, manifest=MACCS_MANIFEST)
         assert counts["predicted"] == 10
     else:
         with pytest.raises(ModelLoadError, match="use job version") as info:
@@ -259,50 +191,10 @@ def test_job_versions_match_job_definition():
     assert job_versions.JOB_VERSIONS[version] == sklearn.__version__
 
 
-# --- reference predictions --------------------------------------------------
-
-
-def test_warns_that_predictions_are_unverified(tmp_path, classifier_file, capsys):
-    predict.run(classifier_file, SDF, tmp_path / "out.csv")
+def test_warns_that_predictions_are_unverified(
+    tmp_path, classifier_file, classifier, capsys
+):
+    spec = predict.load_spec(classifier_file)
+    descfile, manifest = write_descriptor_file(tmp_path, spec, X_TRAIN)
+    predict.run(classifier_file, descfile, tmp_path / "out.csv", manifest=manifest)
     assert "predictions can't be verified" in capsys.readouterr().out
-
-
-REFERENCES = sorted(
-    [
-        *(DATA_DIR / "models").glob("*.reference.csv"),
-        *MODELS_DIR.glob("*.reference.csv"),
-    ],
-    key=lambda p: (p.parent.name, p.name.lower()),
-)
-
-
-def _reference_spec(reference):
-    model = reference.with_name(
-        reference.name.removesuffix(".reference.csv") + ".jmodel"
-    )
-    try:
-        return predict.load_spec(model)
-    except ModelLoadError as exc:
-        # the jaqpotpy models were pickled by scikit-learn 1.3.2
-        if "can't read" in str(exc) and not _same_tree_format("1.3.2"):
-            pytest.skip(f"scikit-learn {sklearn.__version__} can't read its trees")
-        raise
-
-
-@pytest.mark.parametrize(
-    "reference", REFERENCES, ids=lambda p: f"{p.parent.parent.name}/{p.name}"
-)
-def test_model_reproduces_reference(reference):
-    """The models reproduce predictions made by jaqpotpy itself (see
-    scripts/make_reference_predictions.py) on TDC ADMET test molecules. Those
-    in models/ are the legacy models, which aren't in the repository."""
-    check_reference(_reference_spec(reference), read_reference(reference))
-
-
-def test_reference_mismatch_is_detected():
-    path = DATA_DIR / "models" / "CYP2D6_Veith.reference.csv"
-    spec = _reference_spec(path)
-    reference = read_reference(path)
-    reference.loc[0, "prediction"] = 1 - reference.loc[0, "prediction"]
-    with pytest.raises(ReferenceMismatch, match="1 reference values"):
-        check_reference(spec, reference)

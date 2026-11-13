@@ -53,6 +53,11 @@ class ModelSpec:
     # scikit-learn versions the estimators were pickled with, as recorded by
     # the loader (scikit-learn drops them from the unpickled objects)
     sklearn_versions: list[str] = field(default_factory=list)
+    # descriptor-library versions and fragment method the model expects, when
+    # the format records them; used to check precomputed descriptor files. Bare
+    # legacy models record neither, so these stay None and the checks only warn.
+    expected_library_versions: dict | None = None
+    expected_fragment_method: str | None = None
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -78,19 +83,13 @@ class ModelSpec:
         classes = getattr(self.estimator, "classes_", None)
         return None if classes is None else list(classes)
 
-    def features(self, mols) -> tuple[np.ndarray, np.ndarray]:
-        """Model input matrix for the molecules, plus a mask of molecules that
-        could be featurised."""
-        X, ok = self.featurizer.compute(mols)
-        index = {name: i for i, name in enumerate(self.featurizer.feature_names)}
-        return X[:, [index[n] for n in self.feature_names]], ok
-
-    def predict(self, mols) -> tuple[pd.DataFrame, np.ndarray]:
-        """Predictions for a list of molecules: a table with a row per
-        molecule, empty for molecules that couldn't be featurised, and the
-        mask of molecules that were predicted."""
-        X, ok = self.features(mols)
-        table = pd.DataFrame(index=range(len(mols)), columns=self.output_columns)
+    def predict_matrix(
+        self, X: np.ndarray, ok: np.ndarray
+    ) -> tuple[pd.DataFrame, np.ndarray]:
+        """Predictions from a prebuilt feature matrix aligned to feature_names,
+        with ok marking the rows to predict (others left empty). Shares the
+        output table shape with predict()."""
+        table = pd.DataFrame(index=range(len(ok)), columns=self.output_columns)
         if ok.any():
             rows = np.flatnonzero(ok)
             outputs = self._output_columns(self.predict_features(X[ok]))
@@ -124,7 +123,7 @@ class ModelSpec:
             elif values.shape[1] == 2:
                 cols[name] = values[:, 1]
             else:
-                for cls, column in zip(self.classes, values.T):
+                for cls, column in zip(self.classes or [], values.T):
                     cols[f"{name}_{cls}"] = column
         for key in ("leverage", "in_domain"):
             if key in out:
@@ -171,15 +170,10 @@ def check_spec(spec: ModelSpec) -> None:
     Raises UnsupportedModelError for problems that make predictions
     unreliable, and appends warnings to spec.warnings for limitations the user
     should know about.
-    """
-    available = set(spec.featurizer.feature_names)
-    missing = [n for n in spec.feature_names if n not in available]
-    if missing:
-        raise UnsupportedModelError(
-            f"model needs {len(missing)} features that {spec.featurizer.describe()} "
-            f"does not produce here, e.g. {', '.join(missing[:5])}"
-        )
 
+    Whether a descriptor file actually provides the features the model needs is
+    checked against its manifest, not here (see descriptor_input).
+    """
     n_in = getattr(spec.estimator, "n_features_in_", None)
     if n_in is not None and n_in != len(spec.feature_names):
         raise UnsupportedModelError(

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "featurizer": {
+    "name": "morgan",
+    "params": {
+      "radius": 2,
+      "n_bits": 2048,
+      "chiral": false,
+      "bond_types": true,
+      "feature_invariants": false
+    }
+  },
+  "columns": [
+    "FP"
+  ],
+  "id_column": "id",
+  "smiles_column": "smiles",
+  "fragment_method": "none",
+  "library_versions": {
+    "rdkit": "2023.09.6"
+  },
+  "missing_value": 0
+}

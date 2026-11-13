@@ -1,8 +1,10 @@
 # squonk2-predictor
 
 A Squonk2 Data Manager job that takes a pre-trained scikit-learn model and a
-set of molecules, calculates the descriptors the model needs and predicts
-values for the molecules.
+file of precomputed descriptors and predicts values for the molecules. The
+descriptors are calculated by a separate descriptor job (see
+`docs/descriptor-jobs-design.md`); this job only applies the model, so it isn't
+tied to any descriptor library version.
 
 # Supported models
 The model file is loaded with a restricted unpickler that only allows
@@ -19,9 +21,20 @@ trained with another version are flagged, and rejected if they can't run.
 Trees pickled by scikit-learn < 1.4, which includes the jaqpotpy 1.0.x models,
 are converted to the current format on loading.
 
-rdkit, numpy, mordred and Python are held back by the jaqpotpy models: later
-rdkit releases change descriptors they were trained on, and mordred 1.2.0
-needs numpy 1. See the comments in `pyproject.toml`.
+# Descriptor input
+The predictor reads a descriptor file and a sidecar manifest (JSON) that
+describes it: the featurizer and its parameters, the library versions, the
+fragment method, the fill used for uncomputable descriptors, and the descriptor
+column names. The file is delimited text (descriptor values as columns) or an
+SDF (values in fields).
+
+The manifest's featurizer name and parameters are checked strictly against the
+model — a mismatch (e.g. a Morgan file at radius 3 against a radius-2 model)
+changes the feature values silently, so the job refuses it. The library
+versions and fragment method are only reported as warnings, because a bare
+jaqpotpy model records no expectation to check them against. Fingerprints are
+stored as one bit-string column and expanded here to the per-bit columns the
+model names. The manifest format is documented in `docs/descriptor-jobs-design.md`.
 
 # Unverified predictions
 Descriptor implementations change between library versions and estimators can
@@ -31,18 +44,18 @@ doesn't record the predictions it made, so the job can't check this and warns
 that its predictions are unverified.
 
 # Output
-A CSV with a row per input molecule, in input order: `id`, `smiles`, the
+A CSV with a row per input record, in input order: `id`, `smiles`, the
 prediction (named after the model's target), depending on the model
 `<target>_probability` or `<target>_score` (one column per class for
 multiclass models), `<target>_leverage` and `<target>_in_domain` for models
-with an applicability domain, and `error` for molecules that couldn't be
+with an applicability domain, and `error` for records that couldn't be
 predicted.
 
 # Job versions
-One container holds one set of library versions, so models saved with an
-incompatible scikit-learn version need another version of the job, which
-users choose in the Squonk UI. Each such version lives on its own branch and
-differs from `main` only in `pyproject.toml`, `poetry.lock`, the `Dockerfile`,
+One container holds one scikit-learn version, so models saved with an
+incompatible version need another version of the job, which users choose in the
+Squonk UI. Each such version lives on its own branch and differs from `main`
+only in `pyproject.toml`, `poetry.lock`, the `Dockerfile`,
 `data-manager/jobs.yaml` and the job tests; the code and tests are shared and
 run on every supported version. Fixes go to `main` and are merged into the
 branches. When a branch is cut, add its job version to `src/job_versions.py`
@@ -67,19 +80,22 @@ branch's image under the tag its `jobs.yaml` names.
 # Running locally
 
     poetry run python src/predict.py --model models/caco2_wang.jmodel \
-        --molecules data/candidates-10.sdf --outfile predictions.csv
+        --descriptors descriptors.smi --manifest descriptors.manifest.json \
+        --outfile predictions.csv
 
-SMILES input has the SMILES in the first column and an optional id in the
-second (`--delimiter`, `--read-header`).
+The manifest defaults to a sidecar next to the descriptor file
+(`descriptors.smi` → `descriptors.manifest.json`); `--delimiter` sets the
+delimiter of a text descriptor file.
 
 # Tests
 
     poetry run pytest
 
-The tests check that the models reproduce reference predictions made by
-jaqpotpy itself: the test models in `data/models/` always, the legacy models
-only when `models/` holds the `.jmodel` files and their `.reference.csv`
-files, which aren't in the repository.
+The tests are self-contained: they build models and descriptor files in
+temporary directories and check that the predictor loads and checks models,
+reads descriptor files and manifests, and reproduces the estimator's own
+predictions. Reproducing the original jaqpotpy predictions end to end is the
+descriptor jobs' responsibility, since the descriptors are calculated there.
 
 # Job tests
 The job tests in `data-manager/jobs.yaml` run with
@@ -92,17 +108,6 @@ whatever image the job definition's tag refers to:
 
 `jote --dry-run` only validates the job definition. The test data is described
 in `data/README.md`.
-
-# Reference predictions for jaqpotpy models
-`scripts/make_reference_predictions.py` writes reference predictions for a
-jaqpotpy model using jaqpotpy itself, so they record what the original
-software predicted. It runs in a separate environment that reproduces the one the
-models were trained in; its docstring says how to set that up.
-
-The job uses the original `mordred` 1.2.0 rather than `mordredcommunity`,
-because the latter perceives rings differently and changes ring counts and
-descriptors derived from them, which changed predictions of the legacy
-Mordred models for some molecules.
 
 # Setting up the environment
 The development environment requires [Poetry](https://python-poetry.org/docs/main#installing-with-pipx).

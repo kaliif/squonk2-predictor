@@ -1,3 +1,5 @@
+import csv
+import json
 import pickle
 import sys
 import types
@@ -11,6 +13,52 @@ sys.path.insert(0, str(ROOT / "src"))
 MODELS_DIR = ROOT / "models"
 DATA_DIR = ROOT / "data"
 TEST_DATA_DIR = Path(__file__).parent / "data"
+
+
+def write_descriptor_file(
+    tmp_path, spec, X, name="desc", ids=None, smiles=None, failed=(), **manifest
+):
+    """Write a descriptor file and manifest the way a descriptor job would, from
+    a feature matrix X in the model's feature order. For a fingerprint model X
+    is the full bit matrix, written as one bit-string column; for a descriptor
+    model each feature is its own column. Rows in `failed` are written empty.
+
+    Extra keyword args override manifest fields. Returns (descfile, manifest).
+    """
+    feat = spec.featurizer
+    n = len(X)
+    ids = ids if ids is not None else [f"id{i}" for i in range(n)]
+    smiles = smiles if smiles is not None else ["C"] * n
+    cols = ["FP"] if feat.binary else list(spec.feature_names)
+
+    descfile = tmp_path / f"{name}.smi"
+    with open(descfile, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh, delimiter="\t")
+        writer.writerow(["id", "smiles", *cols])
+        for i in range(n):
+            if i in failed:
+                writer.writerow([ids[i], smiles[i], *[""] * len(cols)])
+            elif feat.binary:
+                writer.writerow(
+                    [ids[i], smiles[i], "".join("1" if v else "0" for v in X[i])]
+                )
+            else:
+                writer.writerow([ids[i], smiles[i], *[repr(float(v)) for v in X[i]]])
+
+    data = {
+        "schema_version": 1,
+        "featurizer": {"name": feat.name, "params": feat.params()},
+        "columns": cols,
+        "id_column": "id",
+        "smiles_column": "smiles",
+        "fragment_method": "none",
+        "library_versions": {"rdkit": "2023.9.6"},
+        "missing_value": 0,
+    }
+    data.update(manifest)
+    manpath = tmp_path / f"{name}.manifest.json"
+    manpath.write_text(json.dumps(data))
+    return descfile, manpath
 
 
 def _fake_class(module, name):

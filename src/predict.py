@@ -1,39 +1,45 @@
 """Predict values for molecules with a pre-trained model.
 
-The model file is loaded without running any code it contains, its format is
-recognised and the descriptors it was trained on are calculated for the
-molecules. Models that don't say which descriptors they need, or whose
-parts aren't supported, are rejected.
+The model file is loaded without running any code it contains and its format is
+recognised. Descriptors are not calculated here: a descriptor job computes them
+and the predictor reads that file and its manifest, checks it suits the model,
+and applies the estimator. Models that don't say which descriptors they need,
+or whose parts aren't supported, are rejected.
 
 Nothing in a model file records the predictions the model made when it was
 created, so whether the descriptors and estimator here still reproduce them
 can't be checked; the job warns about this.
 
-The output CSV has a row per input molecule, in input order, with the id,
-SMILES, the prediction and, depending on the model, a probability or score
-and the applicability domain. Molecules that can't be predicted have an
-error instead.
+The output CSV has a row per input record, in input order, with the id, SMILES,
+the prediction and, depending on the model, a probability or score and the
+applicability domain. Records that can't be predicted have an error instead.
 
 Example:
 
     python src/predict.py --model models/caco2_wang.jmodel \\
-        --molecules data/candidates-10.sdf --outfile predictions.csv
+        --descriptors descriptors.smi --outfile predictions.csv
 """
 
 import argparse
 import csv
-import gzip
 import logging
-from collections.abc import Iterator
 from itertools import islice
 from pathlib import Path
 
 from dm_job_utilities.dm_log import DmLog
-from rdkit import Chem, RDLogger
+from rdkit import RDLogger
 from sklearn.base import BaseEstimator
 
 import jaqpotpy_adapter
 import job_versions
+from descriptor_input import (
+    DescriptorFileError,
+    build_matrix,
+    check_manifest,
+    read_descriptors,
+    read_manifest,
+    sidecar_manifest_path,
+)
 from model_spec import ModelSpec, UnsupportedModelError, check_spec
 from safe_loader import ModelLoadError, UnsafeModelError, load_model_file, stub_name
 
@@ -79,54 +85,9 @@ def load_spec(path) -> ModelSpec:
     return spec
 
 
-def read_molecules(
-    path, delimiter="\t", read_header=False
-) -> Iterator[tuple[str, str, Chem.Mol | None]]:
-    """(id, SMILES, molecule) for each record of an SDF or SMILES file.
-
-    The molecule is None if the record can't be parsed. SMILES files have the
-    SMILES in the first column and an optional id in the second; columns are
-    separated by the delimiter or, in the first column, by whitespace.
-    """
-    path = str(path)
-    opener = gzip.open if path.endswith(".gz") else open
-    if path.removesuffix(".gz").endswith(".sdf"):
-        with opener(path, "rb") as fh:
-            for mol in Chem.ForwardSDMolSupplier(fh, removeHs=False):
-                if mol is None:
-                    yield "", "", None
-                    continue
-                name = mol.GetProp("_Name") if mol.HasProp("_Name") else ""
-                yield name, Chem.MolToSmiles(Chem.RemoveHs(mol, sanitize=False)), mol
-    else:
-        with opener(path, "rt", encoding="utf-8", newline="") as fh:
-            rows = csv.reader(fh, delimiter=delimiter, skipinitialspace=True)
-            if read_header:
-                next(rows, None)
-            for row in rows:
-                # SMILES can't contain whitespace, so anything after it in the
-                # first column is the id of a space separated file
-                first = row[0].split(None, 1) if row else []
-                if not first:
-                    continue
-                smiles = first[0]
-                if len(row) > 1:
-                    name = row[1].strip()
-                else:
-                    name = first[1].strip() if len(first) > 1 else ""
-                yield name, smiles, Chem.MolFromSmiles(smiles)
-
-
-def run(
-    model,
-    molecules,
-    outfile,
-    delimiter="\t",
-    read_header=False,
-) -> dict:
-    """Predict the molecules and write the output CSV. Raises if the model
-    can't be used. Returns counts of molecules read and predicted."""
-    spec = load_spec(model)
+def _report_model(spec: ModelSpec) -> None:
+    """Emit the model description and every warning, including that predictions
+    can't be verified."""
     _event(
         f"Model {spec.name} ({spec.source_format}): {type(spec.estimator).__name__} "
         f"predicting {spec.target_name} from {len(spec.feature_names)} "
@@ -134,7 +95,6 @@ def run(
     )
     for warning in spec.warnings:
         _event(f"Warning: {warning}", level=logging.WARNING)
-
     _event(
         "Warning: predictions can't be verified: it is not known whether the "
         "descriptors and estimator here reproduce the predictions made when "
@@ -142,34 +102,37 @@ def run(
         level=logging.WARNING,
     )
 
+
+def _output_columns(spec: ModelSpec) -> list[str]:
+    """Prediction column names, each named after the model's target so the
+    outputs of several models can be combined."""
     target = spec.target_name
-    # prediction columns are named after the target so outputs of several
-    # models can be combined
-    columns = [
+    return [
         target if col == "prediction" else f"{target}_{col}"
         for col in spec.output_columns
     ]
+
+
+def _write_predictions(spec: ModelSpec, outfile, batches) -> dict:
+    """Write the output CSV from an iterator of (metas, table, ok, errors)
+    batches, where metas is a list of (id, smiles), and errors gives the error
+    text for failed rows. Returns counts of records read and predicted."""
+    columns = _output_columns(spec)
     counts = {"read": 0, "predicted": 0, "out_of_domain": 0}
     Path(outfile).parent.mkdir(parents=True, exist_ok=True)
-    records = read_molecules(molecules, delimiter=delimiter, read_header=read_header)
     with open(outfile, "w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["id", "smiles", *columns, "error"])
-        while batch := list(islice(records, BATCH_SIZE)):
-            table, ok = spec.predict([mol for _, _, mol in batch])
-            for i, (name, smiles, mol) in enumerate(batch):
+        for metas, table, ok, errors in batches:
+            for i, (name, smiles) in enumerate(metas):
                 if ok[i]:
                     values = list(table.iloc[i])
                     error = ""
                 else:
                     values = [""] * len(columns)
-                    error = (
-                        "invalid molecule"
-                        if mol is None
-                        else "descriptors can't be calculated"
-                    )
+                    error = errors[i]
                 writer.writerow([name, smiles, *values, error])
-            counts["read"] += len(batch)
+            counts["read"] += len(metas)
             counts["predicted"] += int(ok.sum())
             if "in_domain" in table:
                 counts["out_of_domain"] += int(
@@ -184,40 +147,86 @@ def run(
     return counts
 
 
+def run(
+    model,
+    descriptors,
+    outfile,
+    manifest=None,
+    delimiter="\t",
+) -> dict:
+    """Predict from a precomputed descriptor file and its manifest, and write
+    the output CSV. Raises if the model, the file or the manifest can't be used.
+    Returns counts of records read and predicted."""
+    spec = load_spec(model)
+    manifest_path = manifest or sidecar_manifest_path(descriptors)
+    manifest = read_manifest(manifest_path)
+    _event(
+        f"Descriptors from {manifest.describe()}"
+        + (
+            f", libraries {manifest.library_versions}"
+            if manifest.library_versions
+            else ""
+        )
+        + (
+            f", fragment method {manifest.fragment_method}"
+            if manifest.fragment_method
+            else ""
+        )
+    )
+    spec.warnings += check_manifest(spec, manifest)
+    _report_model(spec)
+    records = read_descriptors(descriptors, manifest, delimiter=delimiter)
+
+    def batches():
+        while batch := list(islice(records, BATCH_SIZE)):
+            X, ok = build_matrix(spec, manifest, batch)
+            table, ok = spec.predict_matrix(X, ok)
+            metas = [(name, smiles) for name, smiles, _ in batch]
+            errors = ["no usable descriptors in the file"] * len(batch)
+            yield metas, table, ok, errors
+
+    return _write_predictions(spec, outfile, batches())
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Predict values for molecules with a pre-trained model"
     )
     parser.add_argument("--model", required=True, help="Model file")
     parser.add_argument(
-        "--molecules", required=True, help="Molecules to predict (.sdf or .smi)"
+        "--descriptors",
+        required=True,
+        help="Precomputed descriptor file to predict from (.smi, .csv or .sdf)",
+    )
+    parser.add_argument(
+        "--manifest",
+        help="Manifest JSON for the descriptor file (default: next to it)",
     )
     parser.add_argument("--outfile", required=True, help="Output CSV file")
     parser.add_argument(
         "--delimiter",
         default="tab",
-        help=f"Delimiter of a SMILES file: {', '.join(DELIMITERS)} or a character",
-    )
-    parser.add_argument(
-        "--read-header",
-        action="store_true",
-        help="The SMILES file has a header line",
+        help=f"Delimiter of a text descriptor file: {', '.join(DELIMITERS)} "
+        "or a character",
     )
     args = parser.parse_args()
 
     RDLogger.DisableLog("rdApp.*")
+    delimiter = DELIMITERS.get(args.delimiter, args.delimiter)
     try:
         run(
             model=args.model,
-            molecules=args.molecules,
+            descriptors=args.descriptors,
             outfile=args.outfile,
-            delimiter=DELIMITERS.get(args.delimiter, args.delimiter),
-            read_header=args.read_header,
+            manifest=args.manifest,
+            delimiter=delimiter,
         )
     except UnsafeModelError as exc:
         _fatal(f"Model rejected as unsafe: {exc}")
     except (ModelLoadError, UnsupportedModelError) as exc:
         _fatal(f"Model can't be used: {exc}")
+    except DescriptorFileError as exc:
+        _fatal(f"Descriptor file can't be used: {exc}")
 
 
 if __name__ == "__main__":
